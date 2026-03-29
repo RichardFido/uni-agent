@@ -31,13 +31,13 @@ Start with the docs below:
 
 <img src="./assets/uni-agent.png" width="80%" alt="Uni-Agent architecture overview">
 
-| Module | Definition |
-|------|------------|
-| `model` | The reasoning backend that decides what to do next |
-| `tool` | The means for the `model` to perceive and act on the `env` |
-| `env` | The runtime environment where actions are executed and state is preserved |
+At the core of Uni-Agent is a unified interaction loop built around three parts: `model`, `tool`, and `env`. We define them as follows:
 
-At the core of Uni-Agent is a unified interaction loop built around `model`, `tool`, and `env`. This interaction stack is used for large-scale agent execution, and can be connected to [verl](https://github.com/verl-project/verl) for scalable RL training.
+- `model` is the reasoning backend that decides what to do next,
+- `tool` is how the `model` perceives and acts on the `env`
+- `env` is the runtime environment where actions are executed and state is preserved.
+
+This interaction stack is used for large-scale agent execution and can be connected to [verl](https://github.com/verl-project/verl) for scalable RL training.
 
 ## Live Dashboard 👀
 
