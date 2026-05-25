@@ -9,7 +9,7 @@ logger.remove()
 
 debug_mode = os.getenv("DEBUG_MODE", False)
 if debug_mode:
-    logger.add(sys.stdout, level="INFO")
+    logger.add(sys.stdout, level="DEBUG")
     logger.add(sys.stderr, level="ERROR")
 
 _handler_registry = {}
