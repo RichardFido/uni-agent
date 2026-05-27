@@ -85,7 +85,13 @@ html_static_path = ["../_static"]
 
 # Copy selected repository assets into the built docs output so they can be
 # referenced directly from documentation pages.
-html_extra_path = ["../../assets/uni-agent.png"]
+html_extra_path = [
+    "../../assets/uni-agent.png",
+    "../../assets/async_comp.png",
+    "../../assets/results_qwen3_30b.png",
+    "../../assets/results_qwen3p5_9b.png",
+    "../../assets/lark-summarize-group-chat.jpeg",
+]
 
 # Add the JavaScript file
 html_js_files = [

@@ -17,8 +17,28 @@ from uni_agent.interaction import (
     ToolsManagerConfig,
 )
 from uni_agent.reward import load_reward_spec
+from uni_agent.skills import SkillsManager, SkillsManagerConfig
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput
 from verl.experimental.agent_loop.utils import resolve_config_path
+
+
+def _deep_merge(base: dict, overrides: dict) -> dict:
+    """Recursively merge ``overrides`` on top of ``base``, returning a new dict.
+
+    - Nested dicts are merged key-wise (``overrides`` wins on conflicts).
+    - Lists and all non-dict types are replaced wholesale (no element-wise merge).
+    - An empty dict in ``overrides`` is a no-op for that key (use ``None`` to clear).
+    - ``base`` is never mutated.
+    """
+    if not isinstance(base, dict) or not isinstance(overrides, dict):
+        return overrides
+    result = dict(base)
+    for k, v in overrides.items():
+        if isinstance(v, dict) and isinstance(result.get(k), dict):
+            result[k] = _deep_merge(result[k], v)
+        else:
+            result[k] = v
+    return result
 
 
 class UniAgentLoop(AgentLoopBase):
@@ -41,6 +61,7 @@ class UniAgentLoop(AgentLoopBase):
             tools_config_list=config_dict["tools"],
             parser=config_dict.get("tool_parser", "qwen3_coder"),
         )
+        self.skills_manager = self._init_skills_manager(config_dict.get("skills"))
         self.env = self._init_env(config_dict["env"])
         self.output_dir = Path(config_dict["log_dir"]) / self.run_id
         self.interaction = AgentInteraction(
@@ -49,6 +70,7 @@ class UniAgentLoop(AgentLoopBase):
             model=self.chat_model,
             tools_manager=self.tools_manager,
             messages=list(kwargs["raw_prompt"]),
+            skills_manager=self.skills_manager,
             **config_dict["interaction"],
         )
         if config_dict["reward"] is not None:
@@ -79,6 +101,9 @@ class UniAgentLoop(AgentLoopBase):
                 # to generate correct tool call format in response
                 self.chat_model.set_tools_schemas(self.tools_manager.tools_schemas)
                 await self.env.install_tools(self.tools_manager.tools)
+                if self.skills_manager is not None:
+                    await self.env.install_skills(self.skills_manager)
+                    self.interaction.inject_skills_manifest()
 
                 interaction_result = await self.interaction.run()
                 interaction_result["metrics"] = dict(interaction_result.get("rollout_cache", {}).get("metrics", {}))
@@ -125,6 +150,9 @@ class UniAgentLoop(AgentLoopBase):
         # TODO: implement traj_mask in verl
         extra_fields["traj_masked"] = 1
         extra_fields["traj_exit_reason"] = exit_reason
+        extra_fields["global_steps"] = 0
+        extra_fields["min_global_steps"] = 0
+        extra_fields["max_global_steps"] = 0
 
         return AgentLoopOutput(
             prompt_ids=prompt_ids,
@@ -157,35 +185,61 @@ class UniAgentLoop(AgentLoopBase):
         )
 
     def _init_config(self, sampling_params: dict[str, Any], **kwargs):
-        # load config from file
+        """Assemble the effective per-run config.
+
+        The config is built from two sources, in priority order (later wins):
+
+        1. **YAML defaults** at ``rollout.agent.agent_loop_config_path``.
+           Provides global fields like ``_target_``, ``name``, ``log_dir``,
+           ``concurrency``, and any default values for ``env`` / ``tools`` /
+           ``interaction`` / ``reward``.
+        2. **Per-sample overrides** in ``kwargs["tools_kwargs"]`` (carried in
+           the dataset's ``extra_info.tools_kwargs``). Any top-level field is
+           overridable here *except* ``model`` (which is always synthesized
+           from rollout/server state below). Dicts are deep-merged, so a
+           partial override like ``{"env": {"deployment": {"image": "..."}}}``
+           leaves everything else in the YAML's ``env`` untouched.
+
+        This supports two usage styles cleanly:
+
+        - **Partial init config** (existing behavior): YAML carries most of
+          the config; per-sample ``tools_kwargs`` patches in a few task-
+          specific bits (image, reward metadata, etc.).
+        - **Full config in the dataset**: the preprocessing script emits a
+          fully-specified ``tools_kwargs`` (env + reward + interaction +
+          tools + ...); the YAML is then only a thin shell carrying
+          ``_target_`` / ``name`` / global knobs.
+        """
         agent_loop_config_path = self.config.actor_rollout_ref.rollout.agent.agent_loop_config_path
         assert agent_loop_config_path is not None, "agent_loop_config_path is None"
         resolved_path = resolve_config_path(agent_loop_config_path)
-        config_dict = yaml.safe_load(Path(resolved_path).read_text())[0]
-        # model config
+        base_config = yaml.safe_load(Path(resolved_path).read_text())[0]
+
+        tools_kwargs = kwargs.get("tools_kwargs") or {}
+        if "model" in tools_kwargs:
+            raise ValueError(
+                "tools_kwargs.model is reserved; the model config is always "
+                "derived from the rollout config and cannot be overridden "
+                "per-sample. Remove `model` from your dataset's tools_kwargs."
+            )
+        config_dict = _deep_merge(base_config, tools_kwargs)
+
         rollout_config = self.config.actor_rollout_ref.rollout
         max_model_len = (
             rollout_config.max_model_len
             if rollout_config.max_model_len is not None
             else rollout_config.prompt_length + rollout_config.response_length
         )
-        model_config = {
+        config_dict["model"] = {
             "client": self.server_manager,
             "tokenizer": self.tokenizer,
             "max_model_len": max_model_len,
             "sampling_params": sampling_params,
         }
-        config_dict["model"] = model_config
-        # env config (optionally override sample-wise image / post_setup_cmd)
-        env_kwargs = kwargs.get("tools_kwargs", {}).get("env") or {}
-        if "image" in env_kwargs:
-            config_dict["env"]["deployment"]["image"] = env_kwargs["image"]
-        if "post_setup_cmd" in env_kwargs:
-            config_dict["env"]["post_setup_cmd"] = env_kwargs["post_setup_cmd"]
-        # reward module
-        reward_config = config_dict.get("reward", {})
-        reward_config.update(kwargs["tools_kwargs"].get("reward", {}))
-        config_dict["reward"] = reward_config if reward_config else None
+
+        if not config_dict.get("reward"):
+            config_dict["reward"] = None
+
         return config_dict
 
     def _init_chat_model(self, config_dict: dict) -> AgentChatModel:
@@ -195,6 +249,19 @@ class UniAgentLoop(AgentLoopBase):
     def _init_tools_manager(self, tools_config_list: list[dict], parser: str = "qwen3_coder") -> ToolsManager:
         tools_manager_config = ToolsManagerConfig(tools=tools_config_list, parser=parser)
         return ToolsManager(tools_manager_config=tools_manager_config)
+
+    def _init_skills_manager(self, skills_config: dict | None) -> SkillsManager | None:
+        """Build a SkillsManager from per-run config.
+
+        - ``skills_config is None`` or missing: skills system disabled (no
+          manifest injection, no container push). Backward-compatible default.
+        - ``skills_config`` provided: build a ``SkillsManagerConfig`` and
+          scan its ``skills_dir`` for ``<name>/SKILL.md`` subdirectories.
+        """
+        if not skills_config:
+            return None
+        cfg = SkillsManagerConfig(**skills_config)
+        return SkillsManager.from_config(cfg)
 
     def _init_env(self, config_dict: dict) -> AgentEnv:
         env_config = AgentEnvConfig(**config_dict)

@@ -18,12 +18,22 @@ The long-term vision is to build the backend infrastructure for next-generation 
 
 **One stack from inference to training:** Uni-Agent reuses the same interaction stack from large-scale agent execution to RL training, with support for advanced paradigms such as fully-async and partial rollout.
 
+## Vision: Milo & Miko 🔮
+
+Beyond the framework, the research direction we are building toward is **agents that continually learn from real conversations with the people who use them**. We are framing this around two flagship agents:
+
+- **Project Milo** — the chat agent that actually gets you. Reads intent and subtext, learns what matters to you over time, and on top of that helps you get work done across schedules, mail, and docs. Seed prototype: [`app/lark_chat`](./app/lark_chat).
+- **Project Miko** — the coding agent that actually gets the problem. Reads specs and codebases, reasons through real engineering challenges, and on top of that manages the whole project for excellent end-to-end performance.
+
+This is a long-term proposal, not a current release. Read the full vision: [Agents That Grow With You](https://uni-agent.readthedocs.io/en/latest/blog/vision.html).
+
 ## Quickstart 🚀
 
 Start with the docs below:
 
 - `Launch`: [Launch an agent environment](https://uni-agent.readthedocs.io/en/latest/start/agent_env.html) to run simple demo scripts.
-- `Build`: [Build a simple search agent](https://uni-agent.readthedocs.io/en/latest/start/search_agent.html) with minimal customization for arXiv paper search and recommendation.
+- `Build`: [Build a simple search agent](https://uni-agent.readthedocs.io/en/latest/start/arxiv_search_agent.html) with minimal customization for arXiv paper search and recommendation.
+- `Search`: [Train a search agent](https://uni-agent.readthedocs.io/en/latest/start/search_agent.html) on ASearcher with a LocalWiki retrieval service.
 - `Scale`: [Run parallel agent interaction](https://uni-agent.readthedocs.io/en/latest/start/agent_interaction.html) for large-scale interaction, inference, and verification workloads.
 - `Train`: [Train an agent with reinforcement learning](https://uni-agent.readthedocs.io/en/latest/start/agent_train.html) using state-of-the-art training techniques.
 
@@ -76,23 +86,29 @@ See [`dashboard/README.md`](./dashboard/README.md) for more details.
 We compare Uni-Agent with existing agent systems on parallel inference and verification workloads.
 
 
-| Model            | Benchmark          | OpenHands | Uni-Agent (1-Attempt, Avg@4) |
-| ---------------- | ------------------ |:---------:|:----------------------------:|
-| Qwen3-Coder-30B  | SWE-Bench-Verified | -         | **48.8**                     |
-| Qwen3-Coder-480B | SWE-Bench-Verified | 62.4      | **64.2**                     |
-| Qwen3-Coder-Next | SWE-Bench-Verified | 66.6      | **67.7**                     |
+| Model            | Benchmark          | OpenHands | Uni-Agent | Setting |
+| ---------------- | ------------------ |:---------:|:---------:| ------- |
+| Qwen3-Coder-30B  | SWE-Bench Verified | -         | **49.2**  | Avg@4, 100 turns, 128K |
+| Qwen3-Coder-480B | SWE-Bench Verified | 62.4      | **64.2**  | Avg@4, 500 turns, 256K |
+| Qwen3-Coder-Next | SWE-Bench Verified | 66.6      | **67.6**  | Avg@4, 300 turns, 128K |
+| Qwen3.5-35B-A3B  | SWE-Bench Verified | 62.0      | **68.4**  | Avg@1, 300 turns, 128K |
+| Qwen3.6-35B-A3B  | Terminal-Bench v2  | -         | **42.5**  | Avg@1, 200K |
 
 
 ### Agent Reinforcement Learning
 
-Uni-Agent supports agent RL training with the same interaction stack used at inference time. A representative recipe is to train [Qwen3-30B-A3B-Instruct](https://huggingface.co/Qwen/Qwen3-30B-A3B-Instruct-2507) on R2E-Gym using **Fully-Asynchronous RL, Partial Rollout, and GSPO**.
-Example training scripts are available in [examples/agent_train](examples/agent_train).
+Uni-Agent supports agent RL training with the same interaction stack used at inference time. We provide fully async training recipes across multiple tasks, models and datasets, with GRPO/GSPO-style objectives and partial rollout support.
+Example scripts are available in [examples/agent_train](examples/agent_train).
 
 
-| Model                        | Dataset | Train Setup                          | Base | RL       |
-| ---------------------------- | ------- | ------------------------------------ |:----:|:--------:|
-| Qwen3-30B-A3B-Instruct       | R2E-Gym | GSPO + Fully-Async + Partial Rollout | 22.2 | **36.8** |
-| Qwen3-Coder-30B-A3B-Instruct | R2E-Gym | GSPO + Fully-Async + Partial Rollout | 46.2 | **52.0** |
+| Model                        | Dataset      | Method | Setting | Base | RL |
+| ---------------------------- | ------------ | ------ | ------- |:----:|:--:|
+| Qwen3-30B-A3B-Instruct       | R2E-Gym      | GSPO   | Fully Async, 100 turns, 128K | 22.2 | **36.8** |
+| Qwen3-Coder-30B-A3B-Instruct | R2E-Gym      | GSPO   | Fully Async, 100 turns, 128K | 46.2 | **52.0** |
+| Qwen3.5-9B                   | SWE-reBench  | GRPO   | Fully Async, 100 turns, 128K | 53.8 | **59.2** |
+
+More training dynamics, including reward, validation score, and average-turn curves, are available in the [agent training guide](https://uni-agent.readthedocs.io/en/latest/start/agent_train.html).
+
 
 
 ## Roadmap 🗺️

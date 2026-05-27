@@ -3,14 +3,18 @@ from importlib import import_module
 from .config import (
     DeployConfig,
     HostDeploymentConfig,
+    LocalAttachDeploymentConfig,
     LocalDeploymentConfig,
+    LocalNativeDeploymentConfig,
     ModalDeploymentConfig,
     VefaasDeploymentConfig,
 )
 
 _LAZY_EXPORTS = {
     "HostDeployment": ".host.deployment",
+    "LocalAttachDeployment": ".local_attach.deployment",
     "LocalDeployment": ".local.deployment",
+    "LocalNativeDeployment": ".local_native.deployment",
     "ModalDeployment": ".modal.deployment",
     "VefaasDeployment": ".vefaas.deployment",
 }
@@ -18,11 +22,15 @@ _LAZY_EXPORTS = {
 __all__ = [
     "DeployConfig",
     "HostDeploymentConfig",
+    "LocalAttachDeploymentConfig",
     "LocalDeploymentConfig",
+    "LocalNativeDeploymentConfig",
     "ModalDeploymentConfig",
     "VefaasDeploymentConfig",
     "HostDeployment",
+    "LocalAttachDeployment",
     "LocalDeployment",
+    "LocalNativeDeployment",
     "ModalDeployment",
     "VefaasDeployment",
 ]
