@@ -3,15 +3,7 @@ import uuid
 from functools import cached_property
 from typing import Any
 
-from uni_agent.utils import get_event_loop
-from verl.utils.chat_template import apply_chat_template
-from verl.utils.profiler import simple_timer
-from verl.utils.tokenizer import normalize_token_ids
-
-try:
-    from openai import AsyncOpenAI
-except ImportError:  # pragma: no cover - handled at runtime
-    AsyncOpenAI = None
+from uni_agent.utils import get_event_loop, simple_timer
 
 
 class MaxTokenExceededError(Exception):
@@ -42,6 +34,8 @@ class AgentChatModel:
         self.tools_schemas = tools_schemas
 
     async def prepare_rollout_cache(self, messages: list[dict[str, str]]) -> dict[str, Any]:
+        from verl.utils.tokenizer import normalize_token_ids
+
         prompt_ids = await self.loop.run_in_executor(
             None,
             lambda: self.tokenizer.apply_chat_template(
@@ -89,7 +83,11 @@ class AgentChatModel:
         messages: list[dict[str, str]],
         rollout_cache: dict[str, Any] | None,
         **kwargs,
-    ) -> list[dict] | dict:
+    ) -> tuple[str, list[dict], dict[str, Any], dict[str, int]]:
+        """Run one model call. Returns ``(text, tool_calls, rollout_cache,
+        generation_info)``. ``tool_calls`` is always ``[]`` on the training
+        path -- verl returns token ids, so callers must parse ``text``.
+        """
         request_id = rollout_cache["request_id"]
         prompt_ids = rollout_cache["prompt_ids"]
         metrics = rollout_cache["metrics"]
@@ -136,9 +134,13 @@ class AgentChatModel:
                 f"prompt_ids length {len(rollout_cache['prompt_ids'])} exceeds max_model_len {self.max_model_len}\n"
                 f"Generated response:\n{response_str}"
             )
-        return response_str, rollout_cache, generation_info
+
+        return response_str, [], rollout_cache, generation_info
 
     async def _get_new_message_ids(self, new_messages: list[dict[str, Any]]) -> list[int]:
+        from verl.utils.chat_template import apply_chat_template
+        from verl.utils.tokenizer import normalize_token_ids
+
         tokenized_prompt = await self.loop.run_in_executor(
             None,
             lambda: apply_chat_template(
@@ -152,6 +154,9 @@ class AgentChatModel:
 
     @cached_property
     def message_boundary_tokens(self) -> list[int]:
+        from verl.utils.chat_template import apply_chat_template
+        from verl.utils.tokenizer import normalize_token_ids
+
         dummy_history = [
             {"role": "user", "content": "dummy user"},
             {"role": "assistant", "content": "dummy assistant"},
@@ -221,120 +226,118 @@ class OpenAICompatibleChatModel:
             self.timeout = 300
         self.base_url = self.base_url.rstrip("/")
         self.loop = get_event_loop()
-        if AsyncOpenAI is None:
-            raise ImportError(
-                "openai is required for OpenAICompatibleChatModel. Please install it with `pip install openai`."
-            )
+
+        from openai import AsyncOpenAI
+
         self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url, timeout=self.timeout)
 
     def set_tools_schemas(self, tools_schemas: list[dict]) -> None:
         self.tools_schemas = tools_schemas
 
     async def prepare_rollout_cache(self, messages: list[dict[str, str]]) -> dict[str, Any]:
-        return {
-            "metrics": {},
-            "extra_fields": {
-                "backend": "openai-compatible",
-                "api_messages": [dict(message) for message in messages],
-                "last_tool_calls": [],
-            },
-        }
+        """Stateless: caller owns ``messages`` and re-passes them every
+        :meth:`query`. Cache holds only metrics.
+        """
+        return {"metrics": {}}
 
     async def append_messages_to_rollout_cache(
         self,
-        new_messages: list[dict[str, str]],
+        new_messages: list[dict[str, Any]],
         rollout_cache: dict[str, Any] | None,
     ):
-        api_messages = rollout_cache["extra_fields"]["api_messages"]
-        last_tool_calls = rollout_cache["extra_fields"].get("last_tool_calls", [])
-        last_tool_call = last_tool_calls[0] if last_tool_calls else None
-
-        for message in new_messages:
-            if message["role"] == "tool":
-                tool_message = {
-                    "role": "tool",
-                    "content": message["content"],
-                }
-                if last_tool_call is not None:
-                    tool_message["tool_call_id"] = last_tool_call["id"]
-                    tool_message["name"] = last_tool_call["function"]["name"]
-                api_messages.append(tool_message)
-            else:
-                api_messages.append(dict(message))
-
+        """No-op; kept so :class:`AgentInteraction` can dispatch uniformly
+        across training and inference paths.
+        """
         return rollout_cache
 
-    def _normalize_messages_for_api(self, api_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _normalize_messages_for_api(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Strip locally-added fields the OpenAI API doesn't accept.
+        Tool messages missing ``tool_call_id`` (format-error fallbacks)
+        pass through as-is.
+        """
         normalized_messages = []
-        for message in api_messages:
+        for message in messages:
             normalized_message = {"role": message["role"]}
             if message.get("content") is not None:
                 normalized_message["content"] = message["content"]
             if message["role"] == "assistant" and message.get("tool_calls"):
                 normalized_message["tool_calls"] = message["tool_calls"]
             if message["role"] == "tool":
-                normalized_message["tool_call_id"] = message["tool_call_id"]
+                tool_call_id = message.get("tool_call_id")
+                if tool_call_id is not None:
+                    normalized_message["tool_call_id"] = tool_call_id
                 if message.get("name") is not None:
                     normalized_message["name"] = message["name"]
             normalized_messages.append(normalized_message)
         return normalized_messages
+
+    # OpenAI ChatCompletion top-level sampling fields.
+    _OPENAI_TOP_LEVEL_SAMPLING_FIELDS: frozenset[str] = frozenset(
+        {
+            "temperature",
+            "top_p",
+            "presence_penalty",
+            "frequency_penalty",
+            "max_tokens",
+            "max_completion_tokens",
+            "stop",
+            "n",
+            "seed",
+            "logprobs",
+            "top_logprobs",
+            "logit_bias",
+            "user",
+        }
+    )
 
     async def query(
         self,
         messages: list[dict[str, str]],
         rollout_cache: dict[str, Any] | None,
         **kwargs,
-    ) -> list[dict] | dict:
-        sampling_params = kwargs.get("sampling_params", self.sampling_params)
-        api_messages = self._normalize_messages_for_api(rollout_cache["extra_fields"]["api_messages"])
+    ) -> tuple[str, list[dict], dict[str, Any], dict[str, int]]:
+        """Run one chat-completion call. Returns ``(text, tool_calls,
+        rollout_cache, generation_info)``. ``tool_calls`` is the OpenAI
+        ``{"id", "type", "function": {"name", "arguments"}}`` shape (one
+        entry per parallel call; ``[]`` if the model returned plain text).
+        """
+        sampling_params = kwargs.get("sampling_params", self.sampling_params) or {}
+        api_messages = self._normalize_messages_for_api(messages)
+
+        top_level = {k: v for k, v in sampling_params.items() if k in self._OPENAI_TOP_LEVEL_SAMPLING_FIELDS}
+        extra_body = {k: v for k, v in sampling_params.items() if k not in self._OPENAI_TOP_LEVEL_SAMPLING_FIELDS}
 
         with simple_timer("generate_sequences", rollout_cache["metrics"]):
             chat_completion = await self.client.chat.completions.create(
                 model=self.model_name,
                 messages=api_messages,
                 tools=self.tools_schemas,
-                temperature=sampling_params.get("temperature", 0.0),
+                extra_body=extra_body or None,
+                **top_level,
             )
 
         response_message = chat_completion.choices[0].message
         response_content = response_message.content or ""
         response_tool_calls = list(response_message.tool_calls or [])
 
-        if response_tool_calls:
-            serialized_tool_calls = []
-            for tool_call in response_tool_calls:
-                serialized_tool_calls.append(
-                    {
-                        "id": tool_call.id,
-                        "type": tool_call.type,
-                        "function": {
-                            "name": tool_call.function.name,
-                            "arguments": tool_call.function.arguments,
-                        },
-                    }
-                )
-            rollout_cache["extra_fields"]["last_tool_calls"] = serialized_tool_calls
-            rollout_cache["extra_fields"]["api_messages"].append(
-                {
-                    "role": "assistant",
-                    "content": response_content,
-                    "tool_calls": serialized_tool_calls,
-                }
-            )
-        else:
-            rollout_cache["extra_fields"]["last_tool_calls"] = []
-            rollout_cache["extra_fields"]["api_messages"].append(
-                {
-                    "role": "assistant",
-                    "content": response_content,
-                }
-            )
+        serialized_tool_calls: list[dict] = [
+            {
+                "id": tool_call.id,
+                "type": tool_call.type,
+                "function": {
+                    "name": tool_call.function.name,
+                    "arguments": tool_call.function.arguments,
+                },
+            }
+            for tool_call in response_tool_calls
+        ]
 
         usage = chat_completion.usage
         completion_tokens = usage.completion_tokens if usage is not None else max(len(response_content.split()), 1)
         prompt_tokens = usage.prompt_tokens if usage is not None else 0
         return (
             response_content,
+            serialized_tool_calls,
             rollout_cache,
             {
                 "prompt_tokens": prompt_tokens,

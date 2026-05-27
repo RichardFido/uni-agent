@@ -4,8 +4,12 @@ import shlex
 from pydantic import BaseModel, ConfigDict
 
 from uni_agent.interaction.tool_parser import FunctionCallFormatError, get_tool_parser
+from uni_agent.interaction.tool_schemas import (
+    OpenAIFunctionCallSchema,
+    OpenAIFunctionToolCall,
+    OpenAIFunctionToolSchema,
+)
 from uni_agent.tools import ToolConfig
-from verl.tools.schemas import OpenAIFunctionCallSchema, OpenAIFunctionToolCall, OpenAIFunctionToolSchema
 
 
 class ToolsManagerConfig(BaseModel):
@@ -29,15 +33,15 @@ class ToolsManager:
     async def parse_action(
         self,
         model_output: str,
-    ) -> dict:
+    ) -> tuple[str, list[OpenAIFunctionToolCall]]:
+        """Parse tool calls from raw text. Returns ``(content, tool_calls)``;
+        ``tool_calls`` is ``[]`` when the text contains no tool-call
+        marker (callers decide -- single-shot raises, chat_mode treats
+        as turn-end). Markers that ARE present but malformed raise
+        :class:`FunctionCallFormatError`.
+        """
         tools = [OpenAIFunctionToolSchema(**schema) for schema in self.tools_schemas]
         content, tool_calls = self._tool_parser.extract_tool_calls(model_output, tools)
-
-        if len(tool_calls) == 0:
-            raise FunctionCallFormatError("No function call found in the response.")
-        elif len(tool_calls) > 1:
-            raise FunctionCallFormatError(f"Number of tool calls {len(tool_calls)} exceeds max_parallel_calls 1.")
-
         return content, tool_calls
 
     async def parse_structured_action(
@@ -45,6 +49,10 @@ class ToolsManager:
         content: str,
         tool_calls_data: list[dict],
     ) -> tuple[str, list[OpenAIFunctionToolCall]]:
+        """Parse OpenAI-style structured tool calls. May return an empty list
+        (callers decide); unknown names / invalid JSON args raise
+        :class:`FunctionCallFormatError`.
+        """
         tool_calls = []
         valid_names = {schema["function"]["name"] for schema in self.tools_schemas}
         for tool_call_data in tool_calls_data:
@@ -72,11 +80,6 @@ class ToolsManager:
                     function=function_call,
                 )
             )
-
-        if len(tool_calls) == 0:
-            raise FunctionCallFormatError("No function call found in the response.")
-        if len(tool_calls) > 1:
-            raise FunctionCallFormatError(f"Number of tool calls {len(tool_calls)} exceeds max_parallel_calls 1.")
         return content, tool_calls
 
     def get_tool_bash_command(self, tool_call: OpenAIFunctionToolCall) -> str:
@@ -89,6 +92,10 @@ class ToolsManager:
 
         if func_name == "execute_bash":
             return func_params.get("command", "")
+
+        if func_name == "lark-cli":
+            command = func_params.get("command", "")
+            return f"lark-cli {command}" if command else ""
 
         # Start building the command
         cmd_parts = [shlex.quote(func_name)]
