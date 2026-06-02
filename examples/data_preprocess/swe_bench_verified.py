@@ -26,7 +26,7 @@ elif impl == "openyuanrong":
         assert len(parts) == 2
         project_name = parts[0].lower()
         instance_number = parts[1].lower()
-        return f"swr.cn-east-3.myhuaweicloud.com/openyuanrong/swe-bench-verified/sweb.eval.x86_64.{project_name}_1776_{instance_number}"
+        return f"swr.cn-east-3.myhuaweicloud.com/openyuanrong/swe-bench-verified/sweb.eval.x86_64.{project_name}_1776_{instance_number}:v2"
 else:
     raise ValueError(f"Invalid deployment implementation: {impl}")
 
