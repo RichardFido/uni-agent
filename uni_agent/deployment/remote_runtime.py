@@ -93,6 +93,7 @@ class RemoteRuntime(AbstractRuntime):
         return timeout
 
     @staticmethod
+
     def _unverified_ssl_context() -> ssl.SSLContext:
         """TODO use tls1.2 for openyuanrong, will be removed in the future"""
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
