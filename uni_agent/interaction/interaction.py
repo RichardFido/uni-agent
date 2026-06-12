@@ -182,6 +182,7 @@ class AgentInteraction:
             self.messages.extend(error_msgs)
             self.rollout_cache = await self.model.append_messages_to_rollout_cache(error_msgs, self.rollout_cache)
             step_output.exit_reason = "format_error"
+            step_output.done = False
             model_output_preview = "\n".join(model_output.splitlines()[:20])
             self.logger.error(
                 f"Fail to parse thought and action from model output.\n"

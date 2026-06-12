@@ -123,6 +123,10 @@ class UniAgentLoop(AgentLoopBase):
             except Exception as e:
                 self.logger.critical(f"Agent loop failed before producing interaction result: {e}")
                 output = await self._build_empty_agent_output(exit_reason="agent_loop_failed")
+            except BaseException as e:
+                # KeyboardInterrupt / SystemExit — must still close env to kill sandbox
+                self.logger.critical(f"Agent loop interrupted: {type(e).__name__}: {e}")
+                output = await self._build_empty_agent_output(exit_reason="agent_loop_interrupted")
             finally:
                 await self.env.close()
             return output

@@ -44,11 +44,12 @@ COMPLETION_TIMEOUT="${COMPLETION_TIMEOUT:-600}"
 # ── Logging ──────────────────────────────────────────────────────────────
 PROJECT_NAME="${PROJECT_NAME:-swe_agent_blackbox}"
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-swe_agent_$(date +%Y%m%d_%H%M)}"
-VERL_LOGGING_LEVEL="${VERL_LOGGING_LEVEL:-INFO}"
+VERL_LOGGING_LEVEL="${VERL_LOGGING_LEVEL:-DEBUG}"
 
 export SWE_AGENT_MAX_TURNS="${MAX_TURNS}"
 export SWE_AGENT_EVAL_TIMEOUT="${SWE_AGENT_EVAL_TIMEOUT:-600}"
-export VERL_LOGGING_LEVEL
+export VERL_LOGGING_LEVEL=DEBUG
+export DEBUG_MODE=True
 
 # ── Environment for NCCL ─────────────────────────────────────────────────
 export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"

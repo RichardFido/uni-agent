@@ -53,15 +53,16 @@ logger = logging.getLogger(__name__)
 
 
 def _remap_image_to_local(image_name: str) -> str:
-    parts = image_name.split("/")
-    if len(parts) > 1 and "." in parts[0]:
-        basename = parts[-1]
-    else:
-        basename = image_name
-    basename = basename.replace("_1776_", "__")
-    if ":" in basename:
-        basename = basename.rsplit(":", 1)[0]
-    return f"{basename}:latest"
+    """Remap vefaas registry images to openYuanrong registry when DEPLOYMENT=openyuanrong."""
+    if os.getenv("DEPLOYMENT", "").lower() in ("yr", "openyuanrong"):
+        for prefix in (
+            "enterprise-public-cn-beijing.cr.volces.com",
+            "enterprise-public-2-cn-beijing.cr.volces.com",
+        ):
+            if image_name.startswith(prefix):
+                image_name = image_name.replace(prefix, "swr.cn-east-3.myhuaweicloud.com/openyuanrong", 1)
+                break
+    return image_name
 
 
 def _remap_sample_images(sample: dict[str, Any]) -> dict[str, Any]:
@@ -144,6 +145,9 @@ def run_inference(
     tool_parser: str | None = None,
     agent_config_path: str | None = None,
     runner: str = "uniagent",
+    max_num_seqs: int = 32,
+    max_model_len: int = 133000,
+    max_num_batched_tokens: int = 8096,
 ) -> dict[str, Any]:
     """Run parallel SWE-agent inference using the blackbox framework."""
     if runner == "mini_swe":
@@ -168,6 +172,9 @@ def run_inference(
         nnodes=nnodes,
         n_gpus_per_node=n_gpus_per_node,
         tensor_parallel_size=tensor_parallel_size,
+        max_num_seqs=max_num_seqs,
+        max_model_len=max_model_len,
+        max_num_batched_tokens=max_num_batched_tokens,
     )
 
     # 2. Load dataset
@@ -210,7 +217,7 @@ def run_inference(
         rollout_config={"n": n, "val_kwargs": {"n": n}},
         completion_timeout=completion_timeout,
         wait_for_completion_after_agent_run=True,
-        max_concurrent_sessions=2,
+        max_concurrent_sessions=300,
         reward_loop_worker_handles=[reward_worker],
     )
 
@@ -319,6 +326,9 @@ def _init_hydra_config(
     nnodes: int,
     n_gpus_per_node: int,
     tensor_parallel_size: int,
+    max_num_seqs: int = 32,
+    max_model_len: int = 133000,
+    max_num_batched_tokens: int = 8096,
 ) -> Any:
     """Initialize Hydra config with rollout/model settings."""
     from hydra import compose, initialize_config_dir
@@ -329,14 +339,19 @@ def _init_hydra_config(
         config = compose(config_name="parallel_infer")
 
     config.actor_rollout_ref.model.path = os.path.expanduser(model_path)
+    config.actor_rollout_ref.model.trust_remote_code = True  # match qwen35.sh --trust-remote-code
     config.actor_rollout_ref.rollout.name = engine
     config.actor_rollout_ref.rollout.mode = "async"
     config.actor_rollout_ref.rollout.prompt_length = prompt_length
     config.actor_rollout_ref.rollout.response_length = response_length
-    config.actor_rollout_ref.rollout.max_model_len = prompt_length + response_length + 1024
+    # max_model_len: let vLLM auto-detect from model's max_position_embeddings
+    # Do NOT hardcode (e.g. 133000) as it may exceed the model's limit (e.g. Qwen3-4B has 40960)
     config.actor_rollout_ref.rollout.n = n
     config.actor_rollout_ref.rollout.tensor_model_parallel_size = tensor_parallel_size
-    config.actor_rollout_ref.rollout.gpu_memory_utilization = 0.5
+    config.actor_rollout_ref.rollout.gpu_memory_utilization = 0.9
+    config.actor_rollout_ref.rollout.max_num_seqs = max_num_seqs
+    config.actor_rollout_ref.rollout.max_model_len= max_model_len
+    config.actor_rollout_ref.rollout.max_num_batched_tokens = max_num_batched_tokens
     config.actor_rollout_ref.rollout.temperature = temperature
     config.actor_rollout_ref.rollout.top_p = top_p
     config.actor_rollout_ref.rollout.val_kwargs.temperature = temperature
@@ -346,6 +361,8 @@ def _init_hydra_config(
     config.actor_rollout_ref.rollout.multi_turn.max_parallel_calls = 1
     config.actor_rollout_ref.rollout.nnodes = nnodes
     config.actor_rollout_ref.rollout.n_gpus_per_node = n_gpus_per_node
+    config.actor_rollout_ref.rollout.max_num_batched_tokens = max_num_batched_tokens
+    config.actor_rollout_ref.rollout.enable_prefix_caching = True
     config.trainer.nnodes = nnodes
     config.trainer.n_gpus_per_node = n_gpus_per_node
 
@@ -353,8 +370,17 @@ def _init_hydra_config(
     config.reward.custom_reward_function.name = "compute_score"
     config.reward.num_workers = 1
 
+    # Must disable struct before writing engine_kwargs.vllm fields
     OmegaConf.set_struct(config.actor_rollout_ref.rollout, False)
     config.actor_rollout_ref.rollout.enable_sleep_mode = False
+    # --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+    config.actor_rollout_ref.rollout.engine_kwargs.vllm.compilation_config = '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+    # --mamba-cache-mode align
+    config.actor_rollout_ref.rollout.engine_kwargs.vllm.mamba_cache_mode = "align"
+    # --additional-config '{"enable_cpu_binding":true}'
+    config.actor_rollout_ref.rollout.engine_kwargs.vllm.additional_config = {"enable_cpu_binding": True}
+    # --async-scheduling
+    config.actor_rollout_ref.rollout.engine_kwargs.vllm.async_scheduling = True
     OmegaConf.set_struct(config.actor_rollout_ref.rollout, True)
     return config
 
@@ -389,9 +415,26 @@ def main():
         default="examples/swe_agent_blackbox/config/agent_config.yaml",
         help="Path to agent config YAML.",
     )
+    parser.add_argument(
+        "--max-num-seqs", type=int, default=None,
+        help="vLLM max_num_seqs (default: from VLLM_MAX_NUM_SEQS env var or 32)",
+    )
+    parser.add_argument(
+        "--max-model-len", type=int, default=None,
+        help="vLLM max_model_len (default: from VLLM_MAX_MODEL_LEN env var or 133000)",
+    )
+    parser.add_argument(
+        "--max-num-batched-tokens", type=int, default=None,
+        help="vLLM max_num_batched_tokens (default: from VLLM_MAX_NUM_BATCHED_TOKENS env var or 8096)",
+    )
     args = parser.parse_args()
 
     os.environ["SWE_AGENT_MAX_TURNS"] = str(args.max_turns)
+
+    # Read vLLM engine params from env vars (set by run_infer.sh), with CLI override
+    max_num_seqs = args.max_num_seqs if args.max_num_seqs is not None else int(os.getenv("VLLM_MAX_NUM_SEQS", "32"))
+    max_model_len = args.max_model_len if args.max_model_len is not None else int(os.getenv("VLLM_MAX_MODEL_LEN", "133000"))
+    max_num_batched_tokens = args.max_num_batched_tokens if args.max_num_batched_tokens is not None else int(os.getenv("VLLM_MAX_NUM_BATCHED_TOKENS", "8096"))
 
     run_inference(
         model_path=args.model_path,
@@ -409,6 +452,9 @@ def main():
         tool_parser=args.tool_parser,
         agent_config_path=args.agent_config_path,
         runner=args.runner,
+        max_num_seqs=max_num_seqs,
+        max_model_len=max_model_len,
+        max_num_batched_tokens=max_num_batched_tokens,
     )
 
 

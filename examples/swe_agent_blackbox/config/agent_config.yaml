@@ -9,13 +9,14 @@
     action_timeout: 300
     max_turns: 100
 
+  model:
+    timeout: 3600
+
   env:
     deployment:
-      type: local
-      command: /usr/bin/python3 -m swerex.server --auth-token {token}
+      type: openyuanrong
       timeout: 600
       startup_timeout: 600
-      container_runtime: docker
     env_variables:
       PIP_PROGRESS_BAR: "off"
       PIP_CACHE_DIR: "~/.cache/pip"

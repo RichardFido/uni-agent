@@ -166,7 +166,7 @@ class YRDeploymentConfig(BaseModel):
     """CPU cgroup limit in milli-cores. 0 means equal to cpu."""
     mem_limit: int = 8192
     """Memory cgroup limit in MiB. 0 means equal to memory."""
-    idle_timeout: int = 600
+    idle_timeout: int = 10800
     """Idle timeout in seconds before auto-termination."""
     env: dict[str, str] | None = None
     """Environment variables injected into the sandbox."""
@@ -180,7 +180,7 @@ class YRDeploymentConfig(BaseModel):
     """Pass internal=True to get_port_url for in-cluster traefik access (sandbox-api Port Forwarding)."""
     command: str | None = None
     """Command to start swerex inside the sandbox. Supports {token} and {port} placeholders."""
-    timeout: float = 60.0
+    timeout: float = 600
     """Timeout for RemoteRuntime operations."""
     startup_timeout: float = 180.0
     """Timeout waiting for swerex server to become alive."""

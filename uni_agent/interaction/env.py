@@ -16,6 +16,7 @@ from swerex.runtime.abstract import (
 
 from uni_agent.async_logging import get_logger
 from uni_agent.deployment import DeployConfig
+from uni_agent.deployment.remote_runtime import SessionNotFoundError
 from uni_agent.skills.manager import SkillsManager
 from uni_agent.tools.base import AbstractTool
 from uni_agent.utils import auto_await
@@ -146,12 +147,29 @@ class AgentEnv:
 
     @auto_await
     async def close(self) -> None:
-        """Shutdown SWE-ReX deployment etc."""
+        """Shutdown SWE-ReX deployment etc.
+
+        If the async stop() path fails, fall back to synchronous sandbox
+        kill so sandboxes are never left alive even when the event loop
+        is broken.
+        """
         self.logger.info("Beginning environment shutdown...")
         try:
             await self.deployment.stop()
         except Exception as e:
-            self.logger.error(f"Failed to stop environment deployment: {e}")
+            self.logger.error(f"Failed to stop environment deployment (async): {e}")
+            # Synchronous fallback: kill the sandbox directly if stop() failed.
+            # This covers cases where the asyncio event loop is broken
+            # (e.g. worker crash, BaseException during shutdown).
+            sandbox = getattr(self.deployment, '_sandbox', None)
+            if sandbox is not None:
+                sandbox_id = getattr(sandbox, 'sandbox_id', '?')
+                try:
+                    if hasattr(sandbox, 'is_running') and sandbox.is_running():
+                        sandbox.kill()
+                        self.logger.info(f"Sandbox {sandbox_id} killed (sync fallback from env.close)")
+                except Exception as e2:
+                    self.logger.error(f"Sync fallback kill also failed for sandbox {sandbox_id}: {e2}")
             return
         self.logger.info("Environment shutdown completed")
 
@@ -215,6 +233,10 @@ class AgentEnv:
                 f"{e.extra_info['bash_stdout']}\n{e.extra_info['bash_stderr']}"
             )
             raise ActionIncorrectSyntaxError(error_message) from None
+
+        except SessionNotFoundError as e:
+            self.logger.error(f"Sandbox session lost: {e}")
+            raise TerminalNotAliveError(str(e)) from None
 
     @auto_await
     async def interrupt_session(self):

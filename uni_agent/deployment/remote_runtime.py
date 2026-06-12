@@ -36,6 +36,10 @@ from swerex.utils.wait import _wait_until_alive
 from uni_agent.async_logging import get_logger
 
 
+class SessionNotFoundError(Exception):
+    """Raised when the sandbox session is gone (e.g. container evicted, 404 from API)."""
+
+
 class RemoteRuntimeConfig(BaseModel):
     auth_token: str
     """The token to use for authentication."""
@@ -170,14 +174,30 @@ class RemoteRuntime(AbstractRuntime):
         raise exception from None
 
     async def _handle_response_errors(self, response: aiohttp.ClientResponse) -> None:
-        """Raise exceptions found in the request response."""
+        """Raise exceptions found in the request response.
+
+        Reads the response body exactly once so aiohttp doesn't complain
+        about double reads.  On 404 we raise SessionNotFoundError; on 511
+        we transfer the remote exception; on any other >=400 we log and
+        raise.
+        """
+        if response.status == 404:
+            # Read body for logging, then raise
+            body = await response.text()
+            self.logger.critical(f"Sandbox session not found (404): {response.url}, body={body[:300]}")
+            raise SessionNotFoundError(f"Sandbox session not found: {response.url}")
         if response.status == 511:
             data = await response.json()
             exc_transfer = _ExceptionTransfer(**data["swerexception"])
             self._handle_transfer_exception(exc_transfer)
         if response.status >= 400:
-            data = await response.json()
-            self.logger.critical(f"Received error response: {data}")
+            # Try JSON first (structured error), fall back to raw text
+            try:
+                data = await response.json()
+                self.logger.critical(f"Received error response: {data}")
+            except Exception:
+                text = await response.text()
+                self.logger.critical(f"Received error response (non-JSON): status={response.status}, body={text[:500]}")
             response.raise_for_status()
 
     async def is_alive(self, *, timeout: float | None = None) -> IsAliveResponse:
