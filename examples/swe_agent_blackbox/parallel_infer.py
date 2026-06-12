@@ -32,7 +32,7 @@ from verl.workers.rollout.llm_server import LLMServerManager
 from uni_agent.trainer.gateway.runtime import GatewayServingRuntime
 
 from examples.swe_agent_blackbox.framework import SWEAgentFramework
-from examples.swe_agent_blackbox.agent_runner import swe_agent_runner
+from examples.swe_agent_blackbox.agent_runner import load_agent_config, swe_agent_runner
 
 try:
     from examples.swe_agent_blackbox.mini_swe_agent_runner import mini_swe_agent_runner
@@ -156,7 +156,8 @@ def run_inference(
     if not ray.is_initialized():
         ray.init()
 
-    # 1. Init Hydra config
+    # 1. Load agent config and init Hydra config
+    agent_config = load_agent_config(agent_config_path) if agent_config_path else {}
     config = _init_hydra_config(
         model_path=model_path,
         engine=engine,
@@ -168,6 +169,7 @@ def run_inference(
         nnodes=nnodes,
         n_gpus_per_node=n_gpus_per_node,
         tensor_parallel_size=tensor_parallel_size,
+        agent_config=agent_config,
     )
 
     # 2. Load dataset
@@ -210,7 +212,7 @@ def run_inference(
         rollout_config={"n": n, "val_kwargs": {"n": n}},
         completion_timeout=completion_timeout,
         wait_for_completion_after_agent_run=True,
-        max_concurrent_sessions=2,
+        max_concurrent_sessions=agent_config.get("concurrency", 2),
         reward_loop_worker_handles=[reward_worker],
     )
 
@@ -319,24 +321,40 @@ def _init_hydra_config(
     nnodes: int,
     n_gpus_per_node: int,
     tensor_parallel_size: int,
+    agent_config: dict[str, Any] | None = None,
 ) -> Any:
-    """Initialize Hydra config with rollout/model settings."""
+    """Initialize Hydra config with rollout/model settings.
+
+    Model-level overrides (gpu_memory_utilization, trust_remote_code,
+    max_num_seqs, max_model_len, max_num_batched_tokens, vllm_kwargs)
+    are read from ``agent_config["model"]`` when present.  This lets
+    NPU-specific settings live in agent_config_npu.yaml instead of
+    being hardcoded or passed via env vars.
+    """
     from hydra import compose, initialize_config_dir
     from omegaconf import OmegaConf
+
+    model_cfg = (agent_config or {}).get("model", {})
 
     config_dir = os.path.abspath("examples/swe_agent_blackbox/config")
     with initialize_config_dir(config_dir=config_dir, version_base=None):
         config = compose(config_name="parallel_infer")
 
     config.actor_rollout_ref.model.path = os.path.expanduser(model_path)
+    config.actor_rollout_ref.model.trust_remote_code = model_cfg.get("trust_remote_code", False)
     config.actor_rollout_ref.rollout.name = engine
     config.actor_rollout_ref.rollout.mode = "async"
     config.actor_rollout_ref.rollout.prompt_length = prompt_length
     config.actor_rollout_ref.rollout.response_length = response_length
-    config.actor_rollout_ref.rollout.max_model_len = prompt_length + response_length + 1024
     config.actor_rollout_ref.rollout.n = n
     config.actor_rollout_ref.rollout.tensor_model_parallel_size = tensor_parallel_size
-    config.actor_rollout_ref.rollout.gpu_memory_utilization = 0.5
+    config.actor_rollout_ref.rollout.gpu_memory_utilization = model_cfg.get("gpu_memory_utilization", 0.5)
+    config.actor_rollout_ref.rollout.max_num_seqs = model_cfg.get("max_num_seqs", 32)
+    # max_model_len: let vLLM auto-detect from model's max_position_embeddings
+    # unless overridden in agent_config (e.g. NPU needs explicit value).
+    if "max_model_len" in model_cfg:
+        config.actor_rollout_ref.rollout.max_model_len = model_cfg["max_model_len"]
+    config.actor_rollout_ref.rollout.max_num_batched_tokens = model_cfg.get("max_num_batched_tokens", 8096)
     config.actor_rollout_ref.rollout.temperature = temperature
     config.actor_rollout_ref.rollout.top_p = top_p
     config.actor_rollout_ref.rollout.val_kwargs.temperature = temperature
@@ -353,8 +371,14 @@ def _init_hydra_config(
     config.reward.custom_reward_function.name = "compute_score"
     config.reward.num_workers = 1
 
+    # Must disable struct before writing engine_kwargs.vllm fields
     OmegaConf.set_struct(config.actor_rollout_ref.rollout, False)
     config.actor_rollout_ref.rollout.enable_sleep_mode = False
+    # Inject vllm_kwargs from agent_config (e.g. NPU-specific compilation_config,
+    # mamba_cache_mode, additional_config, async_scheduling).
+    vllm_kwargs = model_cfg.get("vllm_kwargs", {})
+    for k, v in vllm_kwargs.items():
+        config.actor_rollout_ref.rollout.engine_kwargs.vllm[k] = v
     OmegaConf.set_struct(config.actor_rollout_ref.rollout, True)
     return config
 
@@ -387,7 +411,9 @@ def main():
     parser.add_argument(
         "--agent-config-path", type=str,
         default="examples/swe_agent_blackbox/config/agent_config.yaml",
-        help="Path to agent config YAML.",
+        help="Path to agent config YAML. Model-level vLLM overrides "
+             "(gpu_memory_utilization, max_num_seqs, max_model_len, "
+             "max_num_batched_tokens, vllm_kwargs) are read from this file.",
     )
     args = parser.parse_args()
 

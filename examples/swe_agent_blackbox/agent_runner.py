@@ -63,6 +63,11 @@ def _create_agent_env(run_id: str, tools_kwargs: dict, agent_config: dict) -> Ag
                 "/opt/swerex-venv/bin/python3 -m swerex.server"
                 " --auth-token {token}"
             )
+        elif deployment.get("type") == "openyuanrong":
+            # openyuanrong: _swerex_start_command handles the default command
+            # (OPENYUANRONG_ENV_PREPARE_CMD + REMOTE_EXECUTABLE_NAME + --host/--port).
+            # Do NOT set a custom command here — it would bypass that logic.
+            pass
         else:
             # SWE-bench images may lack swerex; install it before starting the server.
             # pip package is "swe-rex", module is "swerex".
@@ -115,10 +120,12 @@ async def swe_agent_runner(
         await env.start()
         logger.info("[sample %d] env started (%.1fs)", sample_index, time.perf_counter() - t0)
 
+        model_cfg = agent_config.get("model", {})
         model = OpenAICompatibleChatModel(
             base_url=session.base_url,
             api_key="not-needed",
             model_name="default",
+            timeout=model_cfg.get("timeout", 300),
         )
 
         tools_config = agent_config.get("tools", [])

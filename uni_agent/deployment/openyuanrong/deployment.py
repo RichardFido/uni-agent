@@ -1,5 +1,8 @@
 import asyncio
+import atexit
 import os
+import signal
+import threading
 import time
 import uuid
 from typing import Any, Self
@@ -17,22 +20,103 @@ from uni_agent.deployment.remote_runtime import RemoteRuntime, RemoteRuntimeConf
 
 __all__ = ["YRDeployment"]
 
+# ---------------------------------------------------------------------------
+# Global registry for cleanup — kills sandboxes that weren't stopped
+# gracefully.  Coverage:
+#   - normal exit / sys.exit() → atexit callback
+#   - SIGTERM / SIGINT / SIGABRT → signal handler (sync kill then re-raise)
+#   - SIGKILL / segfault → platform idle_timeout (safety net)
+# ---------------------------------------------------------------------------
+_active_sandboxes: dict[str, Any] = {}
+_active_sandbox_lock = threading.Lock()
+_atexit_registered = False
+_signal_handlers_installed = False
 
-def _configure_env() -> None:
-    """Map OPENYUANRONG_* env vars to names required by akernel-sdk before use."""
-    server = os.getenv("OPENYUANRONG_SERVER_ADDRESS")
-    token = os.getenv("OPENYUANRONG_TOKEN")
+
+def _kill_all_active_sandboxes() -> None:
+    """Synchronously kill every sandbox still in the registry.
+
+    Called by both atexit and signal handlers — must be pure sync,
+    no asyncio / no logging (signal context is restricted).
+    """
+    with _active_sandbox_lock:
+        sandbox_ids = list(_active_sandboxes.keys())
+        sandboxes = list(_active_sandboxes.values())
+        _active_sandboxes.clear()
+    for sid, sandbox in zip(sandbox_ids, sandboxes):
+        try:
+            if sandbox.is_running():
+                sandbox.kill()
+        except Exception:
+            pass
+
+
+def _register_atexit() -> None:
+    global _atexit_registered
+    if not _atexit_registered:
+        atexit.register(_kill_all_active_sandboxes)
+        _atexit_registered = True
+
+
+def _signal_handler(signum: int, frame: Any) -> None:
+    """Signal handler: kill sandboxes synchronously, then re-raise signal.
+
+    Re-raising ensures the default disposition (core dump for SIGABRT,
+    termination for SIGTERM/SIGINT) still occurs so the parent process
+    (verl / ray) sees the original exit reason.
+    """
+    _kill_all_active_sandboxes()
+    # Restore default handler and re-raise so the process dies with the
+    # original signal (preserves core-dump / exit-code semantics).
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
+def _install_signal_handlers() -> None:
+    global _signal_handlers_installed
+    if _signal_handlers_installed:
+        return
+    # SIGABRT (core dump), SIGTERM (kill), SIGINT (Ctrl-C)
+    for sig in (signal.SIGABRT, signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _signal_handler)
+        except (OSError, ValueError):
+            # SIGABRT may not be hookable on some platforms; skip silently.
+            pass
+    _signal_handlers_installed = True
+
+
+def _track_sandbox(sandbox: Any) -> None:
+    _register_atexit()
+    _install_signal_handlers()
+    with _active_sandbox_lock:
+        _active_sandboxes[sandbox.sandbox_id] = sandbox
+
+
+def _untrack_sandbox(sandbox_id: str) -> None:
+    with _active_sandbox_lock:
+        _active_sandboxes.pop(sandbox_id, None)
+
+
+def _configure_env(config: YRDeploymentConfig) -> None:
+    """Map YR connection credentials to names required by akernel-sdk.
+
+    Reads server_address and token from the YAML config first,
+    falling back to OPENYUANRONG_* env vars for backward compat.
+    """
+    server = config.server_address or os.getenv("OPENYUANRONG_SERVER_ADDRESS")
+    token = config.token or os.getenv("OPENYUANRONG_TOKEN")
     if not server:
-        raise ValueError("OPENYUANRONG_SERVER_ADDRESS environment variable must be set")
+        raise ValueError("YR server_address must be set via config or OPENYUANRONG_SERVER_ADDRESS env var")
     if not token:
-        raise ValueError("OPENYUANRONG_TOKEN environment variable must be set")
+        raise ValueError("YR token must be set via config or OPENYUANRONG_TOKEN env var")
     os.environ["AKERNEL_SERVER_ADDRESS"] = server
     os.environ["AKERNEL_TOKEN"] = token
 
 
 def _create_sandbox(config: YRDeploymentConfig) -> Any:
     """Create sandbox with port_forwardings=[port] (Port Forwarding, sandbox-api)."""
-    _configure_env()
+    _configure_env(config)
     from akernel_sdk import Sandbox
 
     kwargs: dict[str, Any] = {
@@ -53,7 +137,9 @@ def _create_sandbox(config: YRDeploymentConfig) -> Any:
     kwargs.update(config.sandbox_kwargs)
     kwargs["port_forwardings"] = [config.port]
 
-    return Sandbox(**kwargs)
+    sandbox = Sandbox(**kwargs)
+    _track_sandbox(sandbox)
+    return sandbox
 
 
 def _start_swerex_via_port_forwarding(sandbox: Any, *, command: str, port: int, internal: bool) -> tuple[Any, str]:
@@ -63,8 +149,23 @@ def _start_swerex_via_port_forwarding(sandbox: Any, *, command: str, port: int, 
     2. commands.run(server_cmd, background=True)  — start swerex on the forwarded port
     3. get_port_url(port) — gateway URL for RemoteRuntime
     """
-    handle = sandbox.commands.run(command, background=True)
+    import time as _time
+
+    # Split command: run pip install / setup synchronously first,
+    # then start only the swerex server in background.
+    if "&& exec " in command:
+        setup_cmd, server_part = command.rsplit("&& exec ", 1)
+        if setup_cmd.strip():
+            sandbox.commands.run(setup_cmd, timeout=120)
+
+        # Start only the swerex server in background
+        server_cmd = f"{server_part} 2>/tmp/swerex_stderr.log"
+        handle = sandbox.commands.run(server_cmd, background=True)
+    else:
+        handle = sandbox.commands.run(command, background=True)
+
     url = sandbox.get_port_url(port, internal=internal).replace("http://", "https://")
+
     return handle, url
 
 
@@ -104,7 +205,7 @@ class YRDeployment(AbstractDeployment):
         if self._config.command:
             return self._config.command.format(token=token, port=self._port)
         rex_args = f"--host 0.0.0.0 --port {self._port} --auth-token {token}"
-        prepare_cmd = os.getenv("OPENYUANRONG_ENV_PREPARE_CMD")
+        prepare_cmd = self._config.env_prepare_cmd or os.getenv("OPENYUANRONG_ENV_PREPARE_CMD")
         if prepare_cmd:
             return (
                 f"{prepare_cmd} && "
@@ -120,7 +221,8 @@ class YRDeployment(AbstractDeployment):
         if not running:
             msg = f"YR sandbox {self._sandbox.sandbox_id} is not running"
             return IsAliveResponse(is_alive=False, message=msg)
-        return await self._runtime.is_alive(timeout=timeout)
+        result = await self._runtime.is_alive(timeout=timeout)
+        return result
 
     async def _wait_until_alive(self, timeout: float = 10.0):
         assert self._runtime is not None
@@ -192,6 +294,7 @@ class YRDeployment(AbstractDeployment):
                 last_error = exc
                 self.logger.critical(f"Failed to create YR sandbox: {exc}")
                 await self.stop()
+                self._stopped = False  # allow next retry's stop() to actually clean up
                 if retry < max_retries - 1:
                     sleep_time = min(30, 2**retry)
                     self.logger.info(f"Retrying YR deployment startup in {sleep_time} seconds...")
@@ -218,14 +321,37 @@ class YRDeployment(AbstractDeployment):
             self._command_handle = None
 
         if self._sandbox is not None:
-            loop = asyncio.get_running_loop()
             sandbox_id = self._sandbox.sandbox_id
+            killed = False
+            # Prefer async path (non-blocking), fall back to synchronous kill
+            # if the event loop is unavailable or executor fails.
             try:
                 if self._sandbox.is_running():
+                    loop = asyncio.get_running_loop()
                     await loop.run_in_executor(None, _kill_sandbox, self._sandbox)
-                    self.logger.info(f"Sandbox {sandbox_id} killed")
+                    self.logger.info(f"Sandbox {sandbox_id} killed (async)")
+                    killed = True
+            except (RuntimeError, asyncio.InvalidStateError):
+                # Event loop closed / shutting down — kill synchronously
+                self.logger.warning(f"Async kill failed for sandbox {sandbox_id}, falling back to sync kill")
+                try:
+                    if self._sandbox.is_running():
+                        _kill_sandbox(self._sandbox)
+                        self.logger.info(f"Sandbox {sandbox_id} killed (sync fallback)")
+                        killed = True
+                except Exception as e2:
+                    self.logger.error(f"Failed to kill sandbox {sandbox_id} (sync fallback): {e2}")
             except Exception as e:
-                self.logger.error(f"Failed to kill sandbox {sandbox_id}: {e}")
+                self.logger.error(f"Failed to kill sandbox {sandbox_id} (async): {e}")
+                # Last resort: try synchronous kill even on generic async failures
+                try:
+                    if self._sandbox.is_running():
+                        _kill_sandbox(self._sandbox)
+                        self.logger.info(f"Sandbox {sandbox_id} killed (sync last resort)")
+                        killed = True
+                except Exception as e2:
+                    self.logger.error(f"Failed to kill sandbox {sandbox_id} (sync last resort): {e2}")
+            _untrack_sandbox(sandbox_id)
             self._sandbox = None
 
         self._runtime_url = None

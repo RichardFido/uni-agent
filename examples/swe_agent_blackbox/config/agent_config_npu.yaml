@@ -1,0 +1,55 @@
+- name: swe_agent
+
+  _target_: uni_agent.agent_loop.UniAgentLoop
+  concurrency: 100
+  log_dir: /tmp/swebench_qwen3_coder
+  mask_abnormal_exit_traj: false
+
+  interaction:
+    action_timeout: 600
+    max_turns: 100
+
+  model:
+    timeout: 3600
+    # NPU-specific vLLM engine kwargs — injected into OmegaConf config
+    # by parallel_infer.py when building the hydra config.
+    vllm_kwargs:
+      compilation_config: '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+      mamba_cache_mode: align
+      additional_config:
+        enable_cpu_binding: true
+      async_scheduling: true
+    gpu_memory_utilization: 0.9
+    trust_remote_code: true
+    max_num_seqs: 128
+    max_model_len: 65536
+    max_num_batched_tokens: 65536
+
+  env:
+    deployment:
+      type: openyuanrong
+      timeout: 600
+      startup_timeout: 600
+      # YR connection credentials — set these before running.
+      # Can also be provided via OPENYUANRONG_SERVER_ADDRESS / OPENYUANRONG_TOKEN env vars.
+      server_address: REPLACE_ME
+      token: REPLACE_ME
+      env_prepare_cmd: "unset http_proxy && unset https_proxy && unset no_proxy && pip config set global.index-url https://repo.huaweicloud.com/repository/pypi/simple && pip config set install.trusted-host repo.huaweicloud.com && python3 -m pip install -q swe-rex"
+    env_variables:
+      PIP_PROGRESS_BAR: "off"
+      PIP_CACHE_DIR: "~/.cache/pip"
+      PAGER: "cat"
+      MANPAGER: "cat"
+      LESS: "-R"
+      TQDM_DISABLE: "1"
+      GIT_PAGER: "cat"
+
+  tool_parser: qwen3_coder
+
+  tools:
+    - name: str_replace_editor
+    - name: execute_bash
+    - name: submit
+
+  reward:
+    eval_timeout: 600

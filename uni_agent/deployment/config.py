@@ -166,7 +166,7 @@ class YRDeploymentConfig(BaseModel):
     """CPU cgroup limit in milli-cores. 0 means equal to cpu."""
     mem_limit: int = 8192
     """Memory cgroup limit in MiB. 0 means equal to memory."""
-    idle_timeout: int = 600
+    idle_timeout: int = 10800
     """Idle timeout in seconds before auto-termination."""
     env: dict[str, str] | None = None
     """Environment variables injected into the sandbox."""
@@ -180,7 +180,7 @@ class YRDeploymentConfig(BaseModel):
     """Pass internal=True to get_port_url for in-cluster traefik access (sandbox-api Port Forwarding)."""
     command: str | None = None
     """Command to start swerex inside the sandbox. Supports {token} and {port} placeholders."""
-    timeout: float = 60.0
+    timeout: float = 600
     """Timeout for RemoteRuntime operations."""
     startup_timeout: float = 180.0
     """Timeout waiting for swerex server to become alive."""
@@ -190,6 +190,12 @@ class YRDeploymentConfig(BaseModel):
     """Verify TLS when connecting to the port-forwarded https URL (self-signed clusters often need False)."""
     sandbox_kwargs: dict[str, Any] = Field(default_factory=dict)
     """Extra keyword arguments passed to akernel_sdk.Sandbox."""
+    server_address: str | None = None
+    """YR/AKernel server address. Falls back to OPENYUANRONG_SERVER_ADDRESS env var."""
+    token: str | None = None
+    """YR/AKernel authentication token (JWT). Falls back to OPENYUANRONG_TOKEN env var."""
+    env_prepare_cmd: str | None = None
+    """Shell command prepended to swerex startup (pip config, pip install swe-rex etc). Falls back to OPENYUANRONG_ENV_PREPARE_CMD env var."""
 
     type: Literal["openyuanrong"] = "openyuanrong"
     """Discriminator for (de)serialization/CLI. Do not change."""
