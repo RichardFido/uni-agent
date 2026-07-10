@@ -108,6 +108,10 @@ The training YAML keeps `mini_swe` as the only runner:
 agent_runner_fqn: examples.blackbox_recipes.mini_swe_agent.mini_swe_agent_runner.mini_swe_agent_runner
 ```
 
+> **Note (NPU):** When running on NPU, apply the changes from
+> [verl PR #6682](https://github.com/verl-project/verl/pull/6682) to your verl
+> checkout before starting training.
+
 ## 3. Configuration
 
 | Variable | Default | Description |

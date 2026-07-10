@@ -88,6 +88,8 @@ actor_rollout_ref:
       lr: 1e-6
       weight_decay: 0.1
       lr_decay_style: constant
+    checkpoint:
+      strict: false
     megatron:
       param_offload: true
       grad_offload: true

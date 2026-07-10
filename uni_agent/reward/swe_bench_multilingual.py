@@ -141,9 +141,9 @@ class SWEBenchMultilingualRewardSpec(AbstractRewardSpec):
             reset_tests_command,
             apply_test_patch_command,
             *build_commands,
-            f"echo '{START_TEST_OUTPUT}'",
+            f": '{START_TEST_OUTPUT}'",
             *test_commands,
-            f"echo '{END_TEST_OUTPUT}'",
+            f": '{END_TEST_OUTPUT}'",
             reset_tests_command,
         ]
         # JS instances may ship test image fixtures pulled in right after the reset

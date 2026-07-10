@@ -61,9 +61,9 @@ def _make_eval_script_list(instance, specs, env_name, repo_directory, base_commi
     eval_commands += [
         reset_tests_command,
         apply_test_patch_command,
-        f"echo '{START_TEST_OUTPUT}'",
+        f": '{START_TEST_OUTPUT}'",
         test_command,
-        f"echo '{END_TEST_OUTPUT}'",
+        f": '{END_TEST_OUTPUT}'",
         reset_tests_command,  # Revert tests after done, leave the repo in the same state as before
     ]
     return eval_commands
@@ -171,7 +171,7 @@ class SWEREBenchRewardSpec(AbstractRewardSpec):
 
             execution_t0 = time.perf_counter()
 
-            cmd_str = f"bash {eval_script_container}"
+            cmd_str = f"bash {eval_script_container} 2>&1"
             output = await self.env.communicate(cmd_str, timeout=self.eval_timeout, check="ignore")
 
             execution_time = time.perf_counter() - execution_t0
