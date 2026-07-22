@@ -83,32 +83,38 @@ PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-16}"
 
 # ── Agent parameters ─────────────────────────────────────────────────────
 # AGENT_MAX_TURNS is the agent's turn budget inside the sandbox: it becomes the
-# mini-swe-agent step_limit (read by the runner via the AGENT_MAX_TURNS env var).
+# mini-swe-agent step_limit (passed through the unified task runner).
 # Note: the trainer's multi_turn.max_assistant_turns is NOT enforced on the
 # blackbox rollout path (AgentFrameworkRolloutAdapter), so it is not exposed here.
 RUNNER="${RUNNER:-mini_swe}"
 AGENT_MAX_TURNS="${AGENT_MAX_TURNS:-100}"
 if [[ "${RUNNER}" == "mini_swe" ]]; then
-    AGENT_RUNNER_FQN="examples.blackbox_recipes.mini_swe_agent.mini_swe_agent_runner.mini_swe_agent_runner"
+    AGENT_RUNNER_FQN="examples.blackbox_recipes.mini_swe_agent.task_runner.run_task"
     SWE_AGENT_TOOL_IMAGE="${SWE_AGENT_TOOL_IMAGE:-swr.cn-east-3.myhuaweicloud.com/openyuanrong/mini-swe-agent-tool:latest}"
 else
     echo "Unknown RUNNER=${RUNNER}; this recipe currently supports mini_swe only" >&2
     exit 1
 fi
 SWE_AGENT_RUN_TIMEOUT="${SWE_AGENT_RUN_TIMEOUT:-7200}"
-CONDA_ENV="${CONDA_ENV:-testbed}"
+TASK_CONFIG="${TASK_CONFIG:-${SCRIPT_DIR}/task_config.yaml}"
 GATEWAY_COUNT="${GATEWAY_COUNT:-1}"
 MAX_CONCURRENT_SESSIONS="${MAX_CONCURRENT_SESSIONS:-128}"
 NUM_AGENT_WORKERS="${NUM_AGENT_WORKERS:-8}"
 RUNNER_ARGS=(
     "actor_rollout_ref.rollout.agent.agent_loop_manager_class=uni_agent.framework.entry.AgentFrameworkRolloutAdapter"
     "actor_rollout_ref.rollout.custom.agent_framework.gateway_count=${GATEWAY_COUNT}"
-    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.swe_agent.runner_fqn=${AGENT_RUNNER_FQN}"
-    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.swe_agent.dispatch_mode=ray_task"
-    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.swe_agent.max_concurrent_sessions=${MAX_CONCURRENT_SESSIONS}"
-    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.swe_agent.runner_kwargs.tool_image=${SWE_AGENT_TOOL_IMAGE}"
-    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.swe_agent.runner_kwargs.run_timeout=${SWE_AGENT_RUN_TIMEOUT}"
-    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.swe_agent.runner_kwargs.conda_env=${CONDA_ENV}"
+    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_fqn=${AGENT_RUNNER_FQN}"
+    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.dispatch_mode=ray_task"
+    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.max_concurrent_sessions=${MAX_CONCURRENT_SESSIONS}"
+    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.task_config_path=${TASK_CONFIG}"
+    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.model_name=default"
+    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.report_reward=True"
+    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.tool_image=${SWE_AGENT_TOOL_IMAGE}"
+    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.run_timeout=${SWE_AGENT_RUN_TIMEOUT}"
+    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.max_turns=${AGENT_MAX_TURNS}"
+    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.temperature=${TEMPERATURE}"
+    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.top_p=${TOP_P}"
+    "actor_rollout_ref.rollout.custom.agent_framework.use_reward_loop_worker=False"
 )
 
 # ── AKernel (remote sandbox) ─────────────────────────────────────────────
@@ -131,10 +137,8 @@ TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-${PPO_MINI_BATCH_SIZE}}"
 VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-${TRAIN_BATCH_SIZE}}"
 
 export AGENT_MAX_TURNS
-export SWE_AGENT_EVAL_TIMEOUT="${SWE_AGENT_EVAL_TIMEOUT:-600}"
 export SWE_AGENT_TOOL_IMAGE
 export SWE_AGENT_RUN_TIMEOUT
-export CONDA_ENV
 export GATEWAY_COUNT
 export AKERNEL_SERVER_ADDRESS
 export AKERNEL_TOKEN
@@ -183,10 +187,8 @@ env_vars = {
         "AKERNEL_TOKEN",
         "AKERNEL_TUNNEL_SSL_VERIFY",
         "AGENT_MAX_TURNS",
-        "SWE_AGENT_EVAL_TIMEOUT",
         "SWE_AGENT_TOOL_IMAGE",
         "SWE_AGENT_RUN_TIMEOUT",
-        "CONDA_ENV",
         "GATEWAY_COUNT",
         "VERL_LOGGING_LEVEL",
         "RAY_DEDUP_LOGS",
@@ -259,7 +261,7 @@ MAIN_CMD=(
     '+actor_rollout_ref.rollout.engine_kwargs.vllm.mamba_cache_mode=align' \
     '+actor_rollout_ref.rollout.engine_kwargs.vllm.additional_config.enable_cpu_binding=true' \
     '+actor_rollout_ref.rollout.engine_kwargs.vllm.async_scheduling=true' \
-    actor_rollout_ref.rollout.multi_turn.max_assistant_turns=${MAX_TURNS} \
+    actor_rollout_ref.rollout.multi_turn.max_assistant_turns=${AGENT_MAX_TURNS} \
     actor_rollout_ref.rollout.agent.num_workers=${NUM_AGENT_WORKERS} \
     "${RUNNER_ARGS[@]}" \
     actor_rollout_ref.actor.clip_ratio_low=${CLIP_RATIO_LOW} \

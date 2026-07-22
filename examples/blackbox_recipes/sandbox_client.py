@@ -28,7 +28,6 @@ class CommandResult:
 
 
 logger = logging.getLogger(__name__)
-logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "INFO"))
 
 DEFAULT_PROXY_PORT = 38197
 
@@ -101,10 +100,10 @@ class SandboxClient:
         upstream: str = "",
         proxy_port: int = DEFAULT_PROXY_PORT,
         env: dict[str, str] | None = None,
-        cpu: int = 2000,
-        memory: int = 4096,
-        cpu_limit: int = 8000,
-        mem_limit: int = 12288,
+        cpu: int = 1000,
+        memory: int = 2048,
+        cpu_limit: int = 4000,
+        mem_limit: int = 8192,
         idle_timeout: int = 7200,
         sidecar_target: str = "/opt/mini-swe-agent",
         max_retries: int = 10,

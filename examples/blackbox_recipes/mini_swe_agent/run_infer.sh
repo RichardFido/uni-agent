@@ -35,6 +35,7 @@ MAX_CONCURRENT_SESSIONS="${MAX_CONCURRENT_SESSIONS:-8}"
 AGENT_MAX_TURNS="${AGENT_MAX_TURNS:-100}"
 SWE_AGENT_TOOL_IMAGE="${SWE_AGENT_TOOL_IMAGE:-swr.cn-east-3.myhuaweicloud.com/openyuanrong/mini-swe-agent-tool:latest}"
 SWE_AGENT_RUN_TIMEOUT="${SWE_AGENT_RUN_TIMEOUT:-7200}"
+TASK_CONFIG="${TASK_CONFIG:-${SCRIPT_DIR}/task_config.yaml}"
 
 # ── AKernel (remote sandbox) ─────────────────────────────────────────────
 export AKERNEL_SERVER_ADDRESS="${AKERNEL_SERVER_ADDRESS:-}"
@@ -45,7 +46,6 @@ export AKERNEL_TUNNEL_SSL_VERIFY="${AKERNEL_TUNNEL_SSL_VERIFY:-0}"
 export VERL_LOGGING_LEVEL="${VERL_LOGGING_LEVEL:-INFO}"
 export ROLLOUT_GPU_MEM_UTIL="${ROLLOUT_GPU_MEM_UTIL:-0.7}"
 export AGENT_MAX_TURNS
-export SWE_AGENT_EVAL_TIMEOUT="${SWE_AGENT_EVAL_TIMEOUT:-600}"
 export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/verl:${PYTHONPATH:-}"
 
 echo "=== Mini-SWE-Agent Blackbox Inference ==="
@@ -55,7 +55,7 @@ echo "Max samples: ${MAX_SAMPLES}"
 echo "Engine:      ${ENGINE} (TP=${TP})"
 echo "Tool image:  ${SWE_AGENT_TOOL_IMAGE}"
 echo "Batch:       n=${N}, gateway=${GATEWAY_COUNT}, max_sessions=${MAX_CONCURRENT_SESSIONS}"
-if [[ -n "${GATEWAY_MESSAGE_JSONL_PATH}" ]]; then
+if [[ -n "${GATEWAY_MESSAGE_JSONL_PATH:-}" ]]; then
     echo "Messages:    ${GATEWAY_MESSAGE_JSONL_PATH}"
 fi
 echo "========================================="
@@ -75,6 +75,7 @@ python examples/blackbox_recipes/mini_swe_agent/parallel_infer.py \
     --n-gpus-per-node "${N_GPUS_PER_NODE}" \
     --gateway-count "${GATEWAY_COUNT}" \
     --max-concurrent-sessions "${MAX_CONCURRENT_SESSIONS}" \
+    --task-config "${TASK_CONFIG}" \
     --tool-image "${SWE_AGENT_TOOL_IMAGE}" \
     --run-timeout "${SWE_AGENT_RUN_TIMEOUT}" \
     --max-turns "${AGENT_MAX_TURNS}"

@@ -1,123 +1,103 @@
-# Mini-SWE-Agent In-Sandbox Execution
+# Mini-SWE-Agent Blackbox Recipe
 
-## Overview
+This recipe runs mini-swe-agent through the unified runtime introduced by the
+Task/Agent/Sandbox refactor. The recipe owns only AKernel-specific adaptation
+and launch configuration; the episode lifecycle lives in the shared runtime.
 
-`mini-swe-agent` runs inside the SWE-bench sandbox through a sidecar tool image.
-The external runner creates the sandbox, mounts the tool image at
-`/opt/mini-swe-agent`, starts the agent process, and evaluates the reward in the
-same sandbox.
-
-The agent executes commands through `LocalEnvironment` (local bash) inside the
-sandbox and calls the LLM through the gateway URL passed in via stdin. The
-`mini_swe` tool image uses
-[python-build-standalone](https://github.com/astral-sh/python-build-standalone)
-to build an isolated Python environment, then copies the result into a minimal
-`FROM scratch` final stage, so the sandbox base image does not need to provide
-Python for the sidecar tool runtime.
-
-**This recipe is self-contained.** It shares only
-[`../sandbox_client.py`](../sandbox_client.py) with the claude-code recipe;
-everything else (`dataset.py`, `reward.py`, `run_agent.py`, `build_tool.sh`,
-`run_train.sh`, config) lives in this directory and does not depend on
-`claude_code/`.
-
-**Supported runners:**
-
-| runner | Description |
-|--------|-------------|
-| `mini_swe` | mini-swe-agent sidecar runner |
-
-**Supported sandbox types:**
-
-| Type | Description |
-|------|-------------|
-| openyuanrong | Uses `akernel_sdk.Mount` and `sandbox.commands.run()` |
-
-## Architecture
+## Runtime flow
 
 ```text
-[Rollouter Host: mini_swe_agent_runner]
-  |
-  |-- SandboxClient.create(image, sidecar_image, sidecar_target="/opt/mini-swe-agent")
-  |     `-- akernel: Sandbox(mounts=[Mount(target="/opt/mini-swe-agent", ...)])
-  |
-  |-- sandbox.run("<tool entrypoint>")
-  |     `-- [Inside Sandbox]
-  |           /opt/mini-swe-agent/bin/python /opt/mini-swe-agent/bin/run_agent.py
-  |           stdin <- task config JSON (task, gateway_url, agent)
-  |           commands run inside the SWE-bench sandbox
-  |           stdout -> agent execution result JSON
-  |
-  |-- parse agent result
-  |-- SandboxEnvForReward(sandbox) -> evaluate_in_env()
-  `-- POST session.reward_info_url
+Agent Framework + Gateway session
+  -> recipe task_runner.run_task
+       - converts legacy OpenYuanRong rows to a Task Config
+       - binds the session tunnel to the AKernel sandbox
+  -> uni_agent.framework.task_runner.run_task
+  -> SWEBenchTask
+       -> AKernelSandbox
+       -> MiniSweAgentAgent
+       -> SWE-bench reward
+  -> reward_info -> Gateway trajectory
 ```
 
-## Prerequisites
+`MiniSweAgentAgent` runs mini-swe-agent inside the task sandbox and points its
+LiteLLM model at the current Gateway session. `SWEBenchTask` owns sandbox
+lifecycle and reward evaluation, so the recipe no longer implements either in
+a custom agent runner.
 
-1. **AKernel** — set `AKERNEL_SERVER_ADDRESS` and `AKERNEL_TOKEN`.
-2. **Tool image** — build the mini-swe-agent tool image and push it to a remote
-   registry if the sandbox service cannot access local Docker images.
+## Files
 
-## 1. Build Tool Image
+| File | Purpose |
+|---|---|
+| `task_config.yaml` | Default SWE task, AKernel sandbox, and mini-swe-agent settings |
+| `task_runner.py` | Legacy-row normalization and per-session AKernel tunnel binding |
+| `akernel_sandbox.py` | AKernel implementation of the unified `Sandbox` interface |
+| `dataset.py` | Converts legacy `env`/`reward` rows to `tools_kwargs.task` |
+| `parallel_infer.py` | Standalone vLLM + Gateway blackbox evaluation |
+| `run_train.sh` | Megatron/V1 async training launcher |
+| `Dockerfile.mini-swe-agent-tool` | Portable mini-swe-agent Python sidecar |
 
-`mini_swe` is injected into the SWE-bench sandbox as a sidecar tool image. Use
-`build_tool.sh` to build it.
-
-| Default tool image | Dockerfile | Sandbox mount path | Image contents |
-|--------------------|------------|--------------------|----------------|
-| `mini-swe-agent-tool:latest` | `Dockerfile.mini-swe-agent-tool` | `/opt/mini-swe-agent` | Standalone Python 3.12, `mini-swe-agent`, `litellm`, and `run_agent.py` |
+## AKernel setup
 
 ```bash
-# Use the default PyPI source.
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY
+export NO_PROXY="localhost,127.0.0.1,<gateway-host>"
+export no_proxy="$NO_PROXY"
+
+export AKERNEL_SERVER_ADDRESS="<host>:<port>"
+export AKERNEL_TOKEN="<token>"
+export TUNNEL_SSL_VERIFY=0
+```
+
+The recipe mounts the sidecar at `/opt/mini-swe-agent-venv`. The agent writes a
+small driver and task JSON into `/tmp`, then launches them with the sidecar's
+Python interpreter. The sidecar avoids installing dependencies for every
+rollout while preserving the same `MiniSweAgentAgent` interface used by other
+sandbox providers.
+
+## Build the sidecar
+
+```bash
 bash examples/blackbox_recipes/mini_swe_agent/build_tool.sh
 
-# Use a custom PyPI mirror.
-bash examples/blackbox_recipes/mini_swe_agent/build_tool.sh --pip-index https://pypi.tuna.tsinghua.edu.cn/simple/
-
-# Build and push to a remote registry.
-bash examples/blackbox_recipes/mini_swe_agent/build_tool.sh --registry swr.cn-east-3.myhuaweicloud.com/openyuanrong
+# Build and push to a registry reachable by AKernel.
+bash examples/blackbox_recipes/mini_swe_agent/build_tool.sh \
+  --registry swr.cn-east-3.myhuaweicloud.com/openyuanrong
 ```
 
-The `mini_swe` Python runtime is fully isolated from the sandbox container's
-Python.
-
-### Build Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TOOL_IMAGE` | `mini-swe-agent-tool` | Image name |
-| `TOOL_TAG` | `latest` | Image tag |
-| `PIP_INDEX_URL` | unset, use PyPI | pip index URL (`--pip-index`) |
-
-After pushing, point training at it with `SWE_AGENT_TOOL_IMAGE`.
-
-## 2. Training (Fully Async)
+## Standalone inference
 
 ```bash
-AKERNEL_SERVER_ADDRESS="6.2.179.37:8888" \
-AKERNEL_TOKEN="<token>" \
-SWE_AGENT_TOOL_IMAGE=swr.cn-east-3.myhuaweicloud.com/openyuanrong/mini-swe-agent-tool:latest \
-MODEL_PATH=~/models/Qwen3.5-9B \
+MODEL_PATH=/path/to/Qwen3.5-9B \
+DATA_PATH=/path/to/swe_bench_verified_openyuanrong.parquet \
+MAX_SAMPLES=1 \
+AGENT_MAX_TURNS=100 \
+PROMPT_LENGTH=4096 \
+RESPONSE_LENGTH=125952 \
+TP=8 \
+N_GPUS_PER_NODE=8 \
+MAX_CONCURRENT_SESSIONS=1 \
+bash examples/blackbox_recipes/mini_swe_agent/run_infer.sh
+```
+
+## Training
+
+```bash
+MODEL_PATH=/path/to/model \
+TRAIN_DATA=/path/to/train.parquet \
+VAL_DATA=/path/to/validation.parquet \
 bash examples/blackbox_recipes/mini_swe_agent/run_train.sh
 ```
 
-The training YAML keeps `mini_swe` as the only runner:
-
-```yaml
-agent_runner_fqn: examples.blackbox_recipes.mini_swe_agent.mini_swe_agent_runner.mini_swe_agent_runner
-```
-
-> **Note (NPU):** When running on NPU, apply the changes from
-> [verl PR #6682](https://github.com/verl-project/verl/pull/6682) to your verl
-> checkout before starting training.
-
-## 3. Configuration
+## Main settings
 
 | Variable | Default | Description |
-|----------|---------|-------------|
-| `AGENT_MAX_TURNS` | `100` | mini-swe-agent `step_limit` (the agent's turn budget); read by the runner from the `AGENT_MAX_TURNS` env var |
-| `SWE_AGENT_EVAL_TIMEOUT` | `600` | Reward evaluation timeout (seconds) |
-| `SWE_AGENT_RUN_TIMEOUT` | `7200` | Max wall time for the agent process in the sandbox |
-| `SWE_AGENT_TOOL_IMAGE` | `swr.cn-east-3.myhuaweicloud.com/openyuanrong/mini-swe-agent-tool:latest` | Sidecar tool image |
-| `CONDA_ENV` | `testbed` | Conda env activated inside the sandbox before running the agent |
+|---|---:|---|
+| `AGENT_MAX_TURNS` | `100` | `MiniSweAgentConfig.step_limit` |
+| `SWE_AGENT_RUN_TIMEOUT` | `7200` | Agent and sandbox wall-clock timeout |
+| `SWE_AGENT_TOOL_IMAGE` | OpenYuanRong sidecar image | Portable mini-swe-agent runtime |
+| `TASK_CONFIG` | `task_config.yaml` | Unified Task Config defaults |
+| `MAX_CONCURRENT_SESSIONS` | inference: `8`, training: `128` | Concurrent task sessions |
+
+Both the legacy OpenYuanRong schema (`tools_kwargs.env` +
+`tools_kwargs.reward`) and the refactored schema (`tools_kwargs.task`) are
+accepted. New datasets should use the refactored Task Config schema directly.

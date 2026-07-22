@@ -62,15 +62,21 @@ actor_rollout_ref:
     custom:
       agent_framework:
         gateway_count: 1
+        use_reward_loop_worker: false
         agent_runners:
-          swe_agent:
-            runner_fqn: examples.blackbox_recipes.mini_swe_agent.mini_swe_agent_runner.mini_swe_agent_runner
+          task:
+            runner_fqn: examples.blackbox_recipes.mini_swe_agent.task_runner.run_task
             dispatch_mode: ray_task
             max_concurrent_sessions: 128
             runner_kwargs:
+              task_config_path: examples/blackbox_recipes/mini_swe_agent/task_config.yaml
+              model_name: default
+              report_reward: true
               tool_image: swr.cn-east-3.myhuaweicloud.com/openyuanrong/mini-swe-agent-tool:latest
               run_timeout: 3600
-              conda_env: testbed
+              max_turns: 100
+              temperature: 1.0
+              top_p: 1.0
 
   actor:
     use_dynamic_bsz: false
@@ -186,7 +192,5 @@ ray_kwargs:
         TRANSFER_QUEUE_ENABLE: ""
         NCCL_P2P_DISABLE: "1"
         NCCL_SHM_DISABLE: "1"
-        MAX_TURNS: "100"
-        SWE_AGENT_MAX_TURNS: "100"
         DEBUG_MODE: "true"
         SANDBOX_NAME_PREFIX: "mini-swe-"
