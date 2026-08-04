@@ -1,12 +1,12 @@
 """Standalone inference runner for the blackbox mini-swe-agent recipe.
 
-Spins up vLLM + gateway, runs unified SWE tasks in parallel, and reports
-resolve rate. Does NOT start the Megatron trainer.
+Spins up vLLM + gateway + a reward worker, runs agent sessions in parallel,
+and reports resolve rate. Does NOT start the Megatron trainer.
 
 Reuses the recipe's existing training config
 (config/swe_agent_blackbox_megatron_v1.yaml); its megatron/optimizer sections
-are inert here since this driver never builds the actor worker group — only
-the rollout, agent_framework, model, and reward sections are read.
+are inert here since this driver never builds the actor worker group — only the
+rollout, agent_framework, model, and reward sections are read.
 
 Usage:
     python examples/blackbox_recipes/mini_swe_agent/parallel_infer.py \
@@ -27,8 +27,8 @@ from uuid import uuid4
 import numpy as np
 import ray
 
-from examples.blackbox_recipes.mini_swe_agent.dataset import normalize_row
 from uni_agent.framework.entry import build_agent_framework, build_gateway_manager
+from verl.experimental.reward_loop.reward_loop import RewardLoopWorker
 from verl.utils import tensordict_utils as tu
 from verl.utils.transferqueue_utils import tq
 from verl.workers.rollout.llm_server import LLMServerManager
@@ -44,12 +44,47 @@ logger = logging.getLogger(__name__)
 _CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
 _CONFIG_NAME = "swe_agent_blackbox_megatron_v1"
 _DEFAULT_TOOL_IMAGE = "swr.cn-east-3.myhuaweicloud.com/openyuanrong/mini-swe-agent-tool:latest"
-_DEFAULT_TASK_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "task_config.yaml")
 
 
 # =====================================================================
-# Dataset loading
+# Dataset loading (inlined; keeps the driver self-contained)
 # =====================================================================
+
+
+def _remap_image_to_local(image_name: str) -> str:
+    parts = image_name.split("/")
+    if len(parts) > 1 and "." in parts[0]:
+        basename = parts[-1]
+    else:
+        basename = image_name
+    basename = basename.replace("_1776_", "__")
+    if ":" in basename:
+        basename = basename.rsplit(":", 1)[0]
+    return f"{basename}:latest"
+
+
+def _remap_sample_images(sample: dict[str, Any]) -> dict[str, Any]:
+    extra_info = sample.get("extra_info")
+    if not extra_info:
+        return sample
+    tools_kwargs = extra_info.get("tools_kwargs", {})
+    env = tools_kwargs.get("env", {})
+    image = env.get("image")
+    if not image:
+        return sample
+    local_image = _remap_image_to_local(image)
+    if local_image != image:
+        logger.debug("Remapping image: %s -> %s", image, local_image)
+        env["image"] = local_image
+    return sample
+
+
+def _inject_reward_fields(sample: dict[str, Any]) -> None:
+    extra_info = sample.get("extra_info", {})
+    tools_kwargs = extra_info.get("tools_kwargs", {})
+    reward_config = tools_kwargs.get("reward", {})
+    sample.setdefault("data_source", reward_config.get("name", "unknown"))
+    sample.setdefault("reward_model", {"ground_truth": {}})
 
 
 def load_swe_dataset(data_path: str, max_samples: int = -1) -> list[dict[str, Any]]:
@@ -57,7 +92,10 @@ def load_swe_dataset(data_path: str, max_samples: int = -1) -> list[dict[str, An
 
     path = os.path.expanduser(data_path)
     logger.info("Loading dataset from: %s", path)
-    samples = [normalize_row(sample) for sample in pq.read_table(path).to_pylist()]
+    samples = pq.read_table(path).to_pylist()
+    for i, sample in enumerate(samples):
+        samples[i] = _remap_sample_images(sample)
+        _inject_reward_fields(samples[i])
     if max_samples > 0:
         samples = samples[:max_samples]
     logger.info("Loaded %d samples", len(samples))
@@ -83,10 +121,8 @@ def _load_config(
     tensor_parallel_size: int,
     gateway_count: int,
     max_concurrent_sessions: int,
-    task_config_path: str,
     tool_image: str | None,
     run_timeout: int,
-    max_turns: int,
 ) -> Any:
     """Compose the recipe's training config and override inference fields.
 
@@ -121,19 +157,12 @@ def _load_config(
 
     af = ro.custom.agent_framework
     af.gateway_count = gateway_count
-    af.use_reward_loop_worker = False
     runner_name = next(iter(af.agent_runners.keys()))
     runner_cfg = af.agent_runners[runner_name]
     runner_cfg.max_concurrent_sessions = max_concurrent_sessions
-    runner_cfg.runner_kwargs.task_config_path = task_config_path
-    runner_cfg.runner_kwargs.model_name = "default"
-    runner_cfg.runner_kwargs.report_reward = True
     if tool_image:
         runner_cfg.runner_kwargs.tool_image = tool_image
     runner_cfg.runner_kwargs.run_timeout = run_timeout
-    runner_cfg.runner_kwargs.max_turns = max_turns
-    runner_cfg.runner_kwargs.temperature = temperature
-    runner_cfg.runner_kwargs.top_p = top_p
 
     config.trainer.nnodes = nnodes
     config.trainer.n_gpus_per_node = n_gpus_per_node
@@ -238,10 +267,8 @@ def run_inference(
     tensor_parallel_size: int,
     gateway_count: int,
     max_concurrent_sessions: int,
-    task_config_path: str,
     tool_image: str | None,
     run_timeout: int,
-    max_turns: int,
 ) -> dict[str, Any]:
     if not ray.is_initialized():
         ray.init()
@@ -259,10 +286,8 @@ def run_inference(
         tensor_parallel_size=tensor_parallel_size,
         gateway_count=gateway_count,
         max_concurrent_sessions=max_concurrent_sessions,
-        task_config_path=task_config_path,
         tool_image=tool_image,
         run_timeout=run_timeout,
-        max_turns=max_turns,
     )
 
     samples = load_swe_dataset(data_path, max_samples=max_samples)
@@ -274,9 +299,11 @@ def run_inference(
     llm_client = llm_server_manager.get_client()
 
     gateway_manager = build_gateway_manager(config=config, llm_client=llm_client)
+    reward_worker = ray.remote(RewardLoopWorker).remote(config, None)
     framework = build_agent_framework(
         config=config,
         gateway_manager=gateway_manager,
+        reward_loop_worker_handles=[reward_worker],
     )
 
     prompts, uids = _build_prompts(samples)
@@ -284,21 +311,25 @@ def run_inference(
 
     logger.info("Starting %d sample(s), %d session(s) each...", len(samples), n)
     try:
-        asyncio.run(framework.generate_sequences(prompts))
-    except RuntimeError as exc:
-        logger.warning("generate_sequences failed: %s", exc)
+        try:
+            asyncio.run(framework.generate_sequences(prompts))
+        except RuntimeError as exc:
+            # Framework raises RuntimeError when every rollout fails; downgrade to a
+            # warning so we still report a (zero) resolve rate instead of crashing.
+            logger.warning("generate_sequences failed: %s", exc)
 
-    if not captured_scores:
-        logger.warning(
-            "No trajectory scores captured — all rollouts may have failed (see the "
-            "generate_sequences summary above), or the TransferQueue monkeypatch did not "
-            "reach the writer; resolve rate will be reported as 0."
-        )
+        if not captured_scores:
+            logger.warning(
+                "No trajectory scores captured — all rollouts may have failed (see the "
+                "generate_sequences summary above), or the TransferQueue monkeypatch did not "
+                "reach the writer; resolve rate will be reported as 0."
+            )
 
-    result = _report(samples, uids, captured_scores)
-
-    asyncio.run(gateway_manager.shutdown())
-    return result
+        return _report(samples, uids, captured_scores)
+    finally:
+        # Always tear down gateway actors, even if generate/report raised, so a
+        # failed run does not leak the Ray actor pool.
+        asyncio.run(gateway_manager.shutdown())
 
 
 # =====================================================================
@@ -322,11 +353,13 @@ def main():
     parser.add_argument("--n-gpus-per-node", type=int, default=8)
     parser.add_argument("--gateway-count", type=int, default=1)
     parser.add_argument("--max-concurrent-sessions", type=int, default=8)
-    parser.add_argument("--task-config", type=str, default=_DEFAULT_TASK_CONFIG)
     parser.add_argument("--tool-image", type=str, default=_DEFAULT_TOOL_IMAGE)
     parser.add_argument("--run-timeout", type=int, default=7200)
     parser.add_argument("--max-turns", type=int, default=100)
     args = parser.parse_args()
+
+    # Set before ray.init so runner Ray tasks inherit it.
+    os.environ["AGENT_MAX_TURNS"] = str(args.max_turns)
 
     run_inference(
         model_path=args.model_path,
@@ -343,10 +376,8 @@ def main():
         tensor_parallel_size=args.tensor_parallel_size,
         gateway_count=args.gateway_count,
         max_concurrent_sessions=args.max_concurrent_sessions,
-        task_config_path=args.task_config,
         tool_image=args.tool_image,
         run_timeout=args.run_timeout,
-        max_turns=args.max_turns,
     )
 
 

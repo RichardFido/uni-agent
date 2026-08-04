@@ -1,8 +1,8 @@
-"""Dataset adapter for legacy OpenYuanRong and unified SWE task rows."""
+"""SWEBench-specific dataset that injects verl-standard reward fields.
 
-from __future__ import annotations
-
-from typing import Any
+Self-contained for the mini-swe-agent recipe; mirrors the claude-code dataset
+so mini_swe_agent/ does not depend on claude_code/.
+"""
 
 from verl.utils.dataset.rl_dataset import RLHFDataset
 
@@ -26,35 +26,12 @@ def extract_image(env_config: dict) -> str:
 
 class SWEBenchDataset(RLHFDataset):
     def __getitem__(self, item):
-        return normalize_row(super().__getitem__(item))
+        row_dict = super().__getitem__(item)
+        extra_info = row_dict.get("extra_info", {})
+        tools_kwargs = extra_info.get("tools_kwargs", {})
+        reward_config = tools_kwargs.get("reward", {})
 
+        row_dict.setdefault("data_source", reward_config.get("name", "unknown"))
+        row_dict.setdefault("reward_model", {"ground_truth": {}})
 
-def normalize_row(row: dict[str, Any]) -> dict[str, Any]:
-    """Normalize one dataset row to carry ``extra_info.tools_kwargs.task``."""
-    row = dict(row)
-    extra_info = dict(row.get("extra_info") or {})
-    tools_kwargs = dict(extra_info.get("tools_kwargs") or {})
-    task_config = tools_kwargs.get("task")
-
-    if not isinstance(task_config, dict):
-        env_config = tools_kwargs.get("env") or {}
-        reward_config = tools_kwargs.get("reward") or {}
-        image = extract_image(env_config)
-        if not image:
-            raise ValueError("SWE row has no sandbox image")
-        task_config = {
-            "name": reward_config.get("name", "swe_bench"),
-            "sandbox": {
-                "image": image,
-                "sandbox_kwargs": {"post_setup_cmd": env_config.get("post_setup_cmd", "")},
-            },
-            "prompt": row.get("prompt") or [],
-            "metadata": reward_config.get("metadata") or {},
-        }
-        tools_kwargs["task"] = task_config
-
-    extra_info["tools_kwargs"] = tools_kwargs
-    row["extra_info"] = extra_info
-    row.setdefault("data_source", task_config.get("name", "unknown"))
-    row.setdefault("reward_model", {"ground_truth": task_config.get("metadata") or {}})
-    return row
+        return row_dict

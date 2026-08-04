@@ -2,10 +2,10 @@
 # Build the mini-swe-agent sidecar tool image.
 #
 # The image uses python-build-standalone to build an isolated Python runtime
-# with mini-swe-agent + litellm, copied into a minimal `FROM scratch` final
-# stage. It is mounted into the SWE-bench sandbox at
-# /opt/mini-swe-agent-venv, so the sandbox base image does not need Python for
-# the sidecar tool runtime.
+# with mini-swe-agent + litellm + run_agent.py, copied into a minimal
+# `FROM scratch` final stage rooted at /opt/mini-swe-agent. It is mounted into
+# the SWE-bench sandbox at /opt/mini-swe-agent, so the sandbox base image does
+# not need Python for the sidecar tool runtime.
 #
 # Usage:
 #   bash examples/blackbox_recipes/mini_swe_agent/build_tool.sh

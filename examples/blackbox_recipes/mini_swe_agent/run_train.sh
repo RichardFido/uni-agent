@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Megatron + V1 async training for the blackbox mini-swe recipe.
+# Megatron + V1 async training for the blackbox mini-swe-agent recipe.
 #
 # Uses verl.trainer.main_ppo with the V1 unified trainer. The default mode is
 # separate_async, which uses separate trainer and rollout GPU pools.
@@ -82,45 +82,42 @@ USE_MBRIDGE="${USE_MBRIDGE:-True}"
 PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-16}"
 
 # ── Agent parameters ─────────────────────────────────────────────────────
-# AGENT_MAX_TURNS is the agent's turn budget inside the sandbox: it becomes the
-# mini-swe-agent step_limit (passed through the unified task runner).
-# Note: the trainer's multi_turn.max_assistant_turns is NOT enforced on the
-# blackbox rollout path (AgentFrameworkRolloutAdapter), so it is not exposed here.
-RUNNER="${RUNNER:-mini_swe}"
+# AGENT_MAX_TURNS is the agent's turn budget inside the sandbox: it becomes
+# run_agent.py's `step_limit` (read by the runner via the AGENT_MAX_TURNS env
+# var). Note: the trainer's multi_turn.max_assistant_turns is NOT enforced on
+# the blackbox rollout path (AgentFrameworkRolloutAdapter), so it is not
+# exposed here.
+RUNNER="${RUNNER:-mini_swe_agent}"
 AGENT_MAX_TURNS="${AGENT_MAX_TURNS:-100}"
-if [[ "${RUNNER}" == "mini_swe" ]]; then
-    AGENT_RUNNER_FQN="examples.blackbox_recipes.mini_swe_agent.task_runner.run_task"
-    SWE_AGENT_TOOL_IMAGE="${SWE_AGENT_TOOL_IMAGE:-swr.cn-east-3.myhuaweicloud.com/openyuanrong/mini-swe-agent-tool:latest}"
+if [[ "${RUNNER}" == "mini_swe_agent" ]]; then
+    AGENT_RUNNER_FQN="examples.blackbox_recipes.mini_swe_agent.mini_swe_agent_runner.mini_swe_agent_runner"
+    MINI_SWE_AGENT_TOOL_IMAGE="${MINI_SWE_AGENT_TOOL_IMAGE:-swr.cn-east-3.myhuaweicloud.com/openyuanrong/mini-swe-agent-tool:latest}"
+    MINI_SWE_PROXY_PORT="${MINI_SWE_PROXY_PORT:-38197}"
 else
-    echo "Unknown RUNNER=${RUNNER}; this recipe currently supports mini_swe only" >&2
+    echo "Unknown RUNNER=${RUNNER}; this recipe currently supports mini_swe_agent only" >&2
     exit 1
 fi
 SWE_AGENT_RUN_TIMEOUT="${SWE_AGENT_RUN_TIMEOUT:-7200}"
-TASK_CONFIG="${TASK_CONFIG:-${SCRIPT_DIR}/task_config.yaml}"
+CONDA_ENV="${CONDA_ENV:-testbed}"
 GATEWAY_COUNT="${GATEWAY_COUNT:-1}"
 MAX_CONCURRENT_SESSIONS="${MAX_CONCURRENT_SESSIONS:-128}"
 NUM_AGENT_WORKERS="${NUM_AGENT_WORKERS:-8}"
 RUNNER_ARGS=(
     "actor_rollout_ref.rollout.agent.agent_loop_manager_class=uni_agent.framework.entry.AgentFrameworkRolloutAdapter"
     "actor_rollout_ref.rollout.custom.agent_framework.gateway_count=${GATEWAY_COUNT}"
-    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_fqn=${AGENT_RUNNER_FQN}"
-    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.dispatch_mode=ray_task"
-    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.max_concurrent_sessions=${MAX_CONCURRENT_SESSIONS}"
-    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.task_config_path=${TASK_CONFIG}"
-    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.model_name=default"
-    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.report_reward=True"
-    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.tool_image=${SWE_AGENT_TOOL_IMAGE}"
-    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.run_timeout=${SWE_AGENT_RUN_TIMEOUT}"
-    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.max_turns=${AGENT_MAX_TURNS}"
-    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.temperature=${TEMPERATURE}"
-    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.top_p=${TOP_P}"
-    "actor_rollout_ref.rollout.custom.agent_framework.use_reward_loop_worker=False"
+    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.mini_swe_agent.runner_fqn=${AGENT_RUNNER_FQN}"
+    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.mini_swe_agent.dispatch_mode=ray_task"
+    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.mini_swe_agent.max_concurrent_sessions=${MAX_CONCURRENT_SESSIONS}"
+    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.mini_swe_agent.runner_kwargs.tool_image=${MINI_SWE_AGENT_TOOL_IMAGE}"
+    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.mini_swe_agent.runner_kwargs.run_timeout=${SWE_AGENT_RUN_TIMEOUT}"
+    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.mini_swe_agent.runner_kwargs.conda_env=${CONDA_ENV}"
+    "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.mini_swe_agent.runner_kwargs.proxy_port=${MINI_SWE_PROXY_PORT}"
 )
 
-# ── AKernel (remote sandbox) ─────────────────────────────────────────────
-AKERNEL_SERVER_ADDRESS="${AKERNEL_SERVER_ADDRESS:-}"
-AKERNEL_TOKEN="${AKERNEL_TOKEN:-}"
-AKERNEL_TUNNEL_SSL_VERIFY="${AKERNEL_TUNNEL_SSL_VERIFY:-0}"
+# ── OpenYuanrong (remote sandbox) ───────────────────────────────────────
+OPENYUANRONG_SERVER_ADDRESS="${OPENYUANRONG_SERVER_ADDRESS:-}"
+OPENYUANRONG_TOKEN="${OPENYUANRONG_TOKEN:-}"
+OPENYUANRONG_TUNNEL_SSL_VERIFY="${OPENYUANRONG_TUNNEL_SSL_VERIFY:-0}"
 
 # ── Logging & checkpointing ──────────────────────────────────────────────
 PROJECT_NAME="${PROJECT_NAME:-swe_agent_blackbox}"
@@ -137,23 +134,25 @@ TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-${PPO_MINI_BATCH_SIZE}}"
 VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-${TRAIN_BATCH_SIZE}}"
 
 export AGENT_MAX_TURNS
-export SWE_AGENT_TOOL_IMAGE
+export SWE_AGENT_EVAL_TIMEOUT="${SWE_AGENT_EVAL_TIMEOUT:-600}"
+export SWE_AGENT_MAX_TURNS="${AGENT_MAX_TURNS}"
+export MINI_SWE_AGENT_TOOL_IMAGE
 export SWE_AGENT_RUN_TIMEOUT
+export CONDA_ENV
 export GATEWAY_COUNT
-export AKERNEL_SERVER_ADDRESS
-export AKERNEL_TOKEN
-export AKERNEL_TUNNEL_SSL_VERIFY
-export VERL_LOGGING_LEVEL="${VERL_LOGGING_LEVEL:-INFO}"
-export RAY_DEDUP_LOGS="${RAY_DEDUP_LOGS:-0}"
-export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
+export OPENYUANRONG_SERVER_ADDRESS
+export OPENYUANRONG_TOKEN
+export OPENYUANRONG_TUNNEL_SSL_VERIFY
 export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/verl:${PYTHONPATH:-}"
 
-echo "=== SWE-Agent Blackbox Megatron Async Training ==="
+echo "=== Mini-SWE-Agent Blackbox Megatron Async Training ==="
 echo "Model:       ${MODEL_PATH}"
 echo "Train data:  ${TRAIN_DATA}"
 echo "Val data:    ${VAL_DATA}"
 echo "Engine:      ${ENGINE} (gen_tp=${GEN_TP}, train_tp=${TRAIN_TP})"
 echo "Runner:      ${RUNNER}"
+echo "Tool image:  ${MINI_SWE_AGENT_TOOL_IMAGE}"
+echo "Proxy port:  ${MINI_SWE_PROXY_PORT}"
 echo "Turns:       agent_max_turns=${AGENT_MAX_TURNS}"
 echo "Batch:       n=${N}, mini_bsz=${PPO_MINI_BATCH_SIZE}"
 echo "Sequence:    prompt=${PROMPT_LENGTH}, response=${RESPONSE_LENGTH}"
@@ -183,16 +182,16 @@ env_vars = {
     key: value
     for key in (
         "PYTHONPATH",
-        "AKERNEL_SERVER_ADDRESS",
-        "AKERNEL_TOKEN",
-        "AKERNEL_TUNNEL_SSL_VERIFY",
+        "OPENYUANRONG_SERVER_ADDRESS",
+        "OPENYUANRONG_TOKEN",
+        "OPENYUANRONG_TUNNEL_SSL_VERIFY",
         "AGENT_MAX_TURNS",
-        "SWE_AGENT_TOOL_IMAGE",
+        "SWE_AGENT_EVAL_TIMEOUT",
         "SWE_AGENT_RUN_TIMEOUT",
+        "SWE_AGENT_MAX_TURNS",
+        "MINI_SWE_AGENT_TOOL_IMAGE",
+        "CONDA_ENV",
         "GATEWAY_COUNT",
-        "VERL_LOGGING_LEVEL",
-        "RAY_DEDUP_LOGS",
-        "PYTHONUNBUFFERED",
     )
     if (value := os.environ.get(key)) is not None
 }
@@ -213,8 +212,7 @@ else
 fi
 if ! timeout "${RAY_STATUS_TIMEOUT}" ray status &>/dev/null; then
     echo "Starting Ray cluster (${TOTAL_GPUS} GPUs)..."
-    # ray start --head --num-gpus="${TOTAL_GPUS}" --disable-usage-stats
-    ray start --head --resources='{"NPU": 8}' --disable-usage-stats
+    ray start --head --num-gpus="${TOTAL_GPUS}" --disable-usage-stats
 else
     echo "Ray cluster already running."
 fi
@@ -257,13 +255,9 @@ MAIN_CMD=(
     actor_rollout_ref.rollout.n_gpus_per_node=${ROLLOUT_NGPUS_PER_NODE} \
     actor_rollout_ref.rollout.tensor_model_parallel_size=${GEN_TP} \
     actor_rollout_ref.rollout.gpu_memory_utilization=${ROLLOUT_GPU_MEM_UTIL} \
-    '+actor_rollout_ref.rollout.engine_kwargs.vllm.compilation_config.cudagraph_mode="FULL_DECODE_ONLY"' \
-    '+actor_rollout_ref.rollout.engine_kwargs.vllm.mamba_cache_mode=align' \
-    '+actor_rollout_ref.rollout.engine_kwargs.vllm.additional_config.enable_cpu_binding=true' \
-    '+actor_rollout_ref.rollout.engine_kwargs.vllm.async_scheduling=true' \
-    actor_rollout_ref.rollout.multi_turn.max_assistant_turns=${AGENT_MAX_TURNS} \
     actor_rollout_ref.rollout.agent.num_workers=${NUM_AGENT_WORKERS} \
     "${RUNNER_ARGS[@]}" \
+    actor_rollout_ref.actor.use_dynamic_bsz=true \
     actor_rollout_ref.actor.clip_ratio_low=${CLIP_RATIO_LOW} \
     actor_rollout_ref.actor.clip_ratio_high=${CLIP_RATIO_HIGH} \
     actor_rollout_ref.actor.ppo_mini_batch_size=${PPO_MINI_BATCH_SIZE} \

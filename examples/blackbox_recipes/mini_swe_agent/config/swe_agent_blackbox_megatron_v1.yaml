@@ -3,6 +3,11 @@
 # Entry point: python3 -m verl.trainer.main_ppo
 # Default trainer mode is separate_async. On a single 8-GPU node this recipe
 # uses 4 GPUs for trainer and 4 GPUs for standalone rollout.
+#
+# Mirrors claude_code/config/claude_code_megatron_v1.yaml on the shared
+# rollout/trainer/data/algorithm/reward scaffolding; differs only in the agent
+# runner (mini_swe_agent via stdin-pipe + run_agent.py) and keeps mini_swe-
+# specific fields (val_kwargs, checkpoint.strict, override_transformer_config).
 
 hydra:
   searchpath:
@@ -62,24 +67,19 @@ actor_rollout_ref:
     custom:
       agent_framework:
         gateway_count: 1
-        use_reward_loop_worker: false
         agent_runners:
-          task:
-            runner_fqn: examples.blackbox_recipes.mini_swe_agent.task_runner.run_task
+          mini_swe_agent:
+            runner_fqn: examples.blackbox_recipes.mini_swe_agent.mini_swe_agent_runner.mini_swe_agent_runner
             dispatch_mode: ray_task
             max_concurrent_sessions: 128
             runner_kwargs:
-              task_config_path: examples/blackbox_recipes/mini_swe_agent/task_config.yaml
-              model_name: default
-              report_reward: true
               tool_image: swr.cn-east-3.myhuaweicloud.com/openyuanrong/mini-swe-agent-tool:latest
               run_timeout: 3600
-              max_turns: 100
-              temperature: 1.0
-              top_p: 1.0
+              conda_env: testbed
+              proxy_port: 38197
 
   actor:
-    use_dynamic_bsz: false
+    use_dynamic_bsz: true
     use_rollout_log_probs: true
     ppo_mini_batch_size: 16
     ppo_micro_batch_size_per_gpu: 1
@@ -192,5 +192,7 @@ ray_kwargs:
         TRANSFER_QUEUE_ENABLE: ""
         NCCL_P2P_DISABLE: "1"
         NCCL_SHM_DISABLE: "1"
+        AGENT_MAX_TURNS: "100"
+        SWE_AGENT_MAX_TURNS: "100"
         DEBUG_MODE: "true"
         SANDBOX_NAME_PREFIX: "mini-swe-"
