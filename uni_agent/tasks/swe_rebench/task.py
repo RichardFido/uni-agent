@@ -60,11 +60,13 @@ class SWEREBenchTask(Task):
                 logger.info("applying gold patch to /testbed")
                 await sandbox.write_file("/tmp/gold_patch.patch", sample["patch"])
                 await sandbox.exec(["git", "apply", "--whitespace=fix", "/tmp/gold_patch.patch"], workdir="/testbed")
+                finished = True
             else:
                 agent = self.build_agent()
                 messages = cfg.prompt
                 # The endpoint the agent calls lives on cfg.agent.model (the agent validates it).
-                await agent.run(sandbox=sandbox, messages=messages)
+                agent_result = await agent.run(sandbox=sandbox, messages=messages)
+                finished = agent_result.finished
 
             try:
                 from .reward import compute_reward
@@ -78,5 +80,6 @@ class SWEREBenchTask(Task):
             return TaskResult(
                 reward=float(result["resolved"]),
                 accuracy=float(result["resolved"]),
-                info=result,
+                finished=finished,
+                extra_info=result,
             )

@@ -36,7 +36,28 @@ Uni-Agent supports multiple sandbox backends. Choose the backend that matches yo
 
     **Local, isolated.** [Docker](https://www.docker.com/) runs agents in containers on your machine.
 
-    Integration and configuration instructions are to be filled.
+    Install Docker and make sure its daemon is running. By default, Docker pulls the image when it is not already available locally.
+
+    ```python
+    from uni_agent.sandbox import SandboxConfig
+
+    config = SandboxConfig(
+        provider="docker",
+        image="python:3.12",
+        sandbox_kwargs={
+            # "missing" (default), "always", or "never".
+            "pull_policy": "missing",
+            # Optional arguments inserted before the image in `docker run`.
+            "run_args": ["--network", "none"],
+        },
+    )
+    ```
+
+    The provider starts an ephemeral container, executes commands with `docker exec`,
+    transfers files with `docker cp`, and removes the container when the sandbox exits.
+    The default container command is `sleep infinity`; images without `sleep` can override
+    `entrypoint` and `command` in `sandbox_kwargs`. Run `docker login <registry>` first when
+    pulling from a private registry.
 
 === "veFaaS"
 
@@ -55,6 +76,16 @@ Uni-Agent supports multiple sandbox backends. Choose the backend that matches yo
     export VEFAAS_FUNCTION_ROUTE="<function-route>"
     export VOLCE_ACCESS_KEY="<access-key>"
     export VOLCE_SECRET_KEY="<secret-key>"
+    ```
+
+    To spread load across several veFaaS functions, pass a comma-separated list
+    to each variable; the i-th id pairs with the i-th route (so the two lists
+    must have the same length), and each sandbox binds to one randomly chosen
+    pair for its lifetime:
+
+    ```bash
+    export VEFAAS_FUNCTION_ID="<function-id-1>,<function-id-2>"
+    export VEFAAS_FUNCTION_ROUTE="<function-route-1>,<function-route-2>"
     ```
 
     Create the sandbox configuration:
@@ -101,11 +132,51 @@ Uni-Agent supports multiple sandbox backends. Choose the backend that matches yo
     )
     ```
 
-=== "YuanRong"
+=== "OpenYuanrong"
 
-    **Remote or self-hosted service.** [YuanRong](https://docs.openyuanrong.org/zh-cn/latest/index.html) provides elastic sandbox management for distributed agent workloads.
+    **Remote or self-hosted service.** [OpenYuanrong](https://docs.openyuanrong.org/zh-cn/latest/index.html) provides elastic sandbox management for distributed agent workloads.
 
-    Integration and configuration instructions are to be filled.
+    Install the sandbox SDK:
+
+    ```bash
+    pip install akernel_sdk
+    pip install openyuanrong_sdk
+    ```
+
+    Configure the service endpoint and credentials through environment variables:
+
+    ```bash
+    export OPENYUANRONG_SERVER_ADDRESS="<server-address>"
+    export OPENYUANRONG_TOKEN="<token>"
+    # Optional: toggle SSL verification on the reverse tunnel (default "0").
+    export OPENYUANRONG_TUNNEL_SSL_VERIFY="0"
+    ```
+
+    Configure the image, lifecycle timeout, and optional resource limits, mounts, and reverse tunnel:
+
+    ```python
+    from uni_agent.sandbox import SandboxConfig
+
+    config = SandboxConfig(
+        provider="openyuanrong",
+        image="python:3.12",
+        runtime_timeout=3600,
+        sandbox_kwargs={
+            "cpu": 1000,
+            "memory": 2048,
+            "cpu_limit": 4000,
+            "mem_limit": 8192,
+            "idle_timeout": 7200,
+            # Mount a image (e.g. a tool runtime) at a target path.
+            "mounts": [{"target": "/opt/tool", "image_url": "<image-url>"}],
+            # Reverse tunnel: let the sandbox reach a local gateway via 127.0.0.1:<proxy_port>.
+            "upstream": "<gateway-host>:<gateway-port>",
+            "proxy_port": 38197,
+            # Forward sandbox ports to the host.
+            "port_forwardings": [8080],
+        },
+    )
+    ```
 
 ### Start and Stop the Sandbox
 
@@ -213,6 +284,12 @@ After configuring a supported backend above, run the complete connectivity and p
     DEBUG_MODE=1 SANDBOX_PROVIDER=local python examples/quickstart/sandbox/demo.py
     ```
 
+=== "Docker"
+
+    ```bash
+    DEBUG_MODE=1 SANDBOX_PROVIDER=docker python examples/quickstart/sandbox/demo.py
+    ```
+
 === "veFaaS"
 
     ```bash
@@ -223,6 +300,12 @@ After configuring a supported backend above, run the complete connectivity and p
 
     ```bash
     DEBUG_MODE=1 SANDBOX_PROVIDER=modal python examples/quickstart/sandbox/demo.py
+    ```
+
+=== "OpenYuanrong"
+
+    ```bash
+    DEBUG_MODE=1 SANDBOX_PROVIDER=openyuanrong python examples/quickstart/sandbox/demo.py
     ```
 
 Next, you can [run agent inference](agent-inference.md) against a sandbox-backed task.

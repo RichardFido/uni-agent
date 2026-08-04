@@ -22,11 +22,13 @@ class _FakeSandbox:
         npm_available: bool = True,
         install_exit_code: int = 0,
         install_stderr: str = "install failed",
+        process_exit_code: int = 0,
     ):
         self.probe_results = list(probe_results)
         self.npm_available = npm_available
         self.install_exit_code = install_exit_code
         self.install_stderr = install_stderr
+        self.process_exit_code = process_exit_code
         self.calls: list[dict] = []
         self.exec_calls: list[dict] = []
 
@@ -41,7 +43,7 @@ class _FakeSandbox:
 
     async def exec(self, argv, *, timeout=None, workdir=None, env=None) -> ExecResult:
         self.exec_calls.append({"argv": argv, "timeout": timeout, "workdir": workdir, "env": env})
-        return ExecResult(exit_code=0, stdout="done", stderr="")
+        return ExecResult(exit_code=self.process_exit_code, stdout="done", stderr="")
 
 
 def _agent() -> ClaudeCodeAgent:
@@ -121,18 +123,50 @@ def test_run_uses_sandbox_default_workdir():
     )
     sandbox = _FakeSandbox(probe_results=[0])
 
-    asyncio.run(
+    result = asyncio.run(
         ClaudeCodeAgent(config).run(
             sandbox=sandbox,
             messages=[{"role": "user", "content": "fix the bug"}],
         )
     )
 
+    assert result.finished is True
     assert len(sandbox.exec_calls) == 1
     assert sandbox.exec_calls[0]["workdir"] is None
+    argv = sandbox.exec_calls[0]["argv"]
+    assert argv[:2] == ["claude", "-p"]
+    assert argv[argv.index("--model") + 1] == "policy"
+    assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
+    assert "--bare" not in argv
+    assert "--no-session-persistence" not in argv
+    assert "--disable-slash-commands" not in argv
+    assert "--dangerously-skip-permissions" not in argv
+    disallowed_tools = argv[argv.index("--disallowedTools") + 1].split(",")
+    assert set(disallowed_tools) == {"Agent", "Task", "WebFetch", "WebSearch", "AskUserQuestion"}
     assert sandbox.exec_calls[0]["env"]["ANTHROPIC_BASE_URL"] == "https://ark.example/api/compatible"
     assert sandbox.exec_calls[0]["env"]["ANTHROPIC_API_KEY"] == ""
     assert sandbox.exec_calls[0]["env"]["ANTHROPIC_AUTH_TOKEN"] == "ark-test-api-key"
+    assert sandbox.exec_calls[0]["env"]["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] == "1"
+    assert sandbox.exec_calls[0]["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
+    assert sandbox.exec_calls[0]["env"]["CLAUDE_CODE_FORK_SUBAGENT"] == "0"
+    assert sandbox.exec_calls[0]["env"]["CLAUDE_CODE_SKIP_PROMPT_HISTORY"] == "1"
+
+
+def test_run_reports_nonzero_process_exit():
+    config = ClaudeCodeConfig(
+        model=ModelConfig(base_url="http://gateway:8000/v1", model_name="policy"),
+    )
+    sandbox = _FakeSandbox(probe_results=[0], process_exit_code=2)
+
+    result = asyncio.run(
+        ClaudeCodeAgent(config).run(
+            sandbox=sandbox,
+            messages=[{"role": "user", "content": "fix the bug"}],
+        )
+    )
+
+    assert result.finished is False
+    assert result.info["exit_code"] == 2
 
 
 def test_claude_env_uses_placeholders_for_session_gateway():

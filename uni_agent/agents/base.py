@@ -23,10 +23,19 @@ class ModelConfig(BaseModel):
         default=None, description="Model name sent to the endpoint (the served model / policy)."
     )
 
-    # Sampling knobs -- keep aligned with the RL rollout config so inference == training.
-    temperature: float = Field(default=1.0, description="Sampling temperature.")
-    top_p: float = Field(default=1.0, description="Nucleus-sampling probability mass.")
-    top_k: int = Field(default=-1, description="Top-k sampling; -1 disables it.")
+    # During RL, the Gateway session gets these defaults from the rollout config
+    temperature: float | None = Field(
+        default=None,
+        description="Sampling temperature; None inherits the endpoint/session default.",
+    )
+    top_p: float | None = Field(
+        default=None,
+        description="Nucleus-sampling probability mass; None inherits the endpoint/session default.",
+    )
+    top_k: int | None = Field(
+        default=None,
+        description="Top-k sampling; -1 disables it and None inherits the endpoint/session default.",
+    )
 
     # Generation budget: one turn's generation vs the whole episode's generation.
     max_total_tokens: int | None = Field(
@@ -39,6 +48,15 @@ class ModelConfig(BaseModel):
     )
 
     model_config = ConfigDict(extra="forbid")
+
+    def sampling_params(self) -> dict[str, float | int]:
+        """Return only sampling knobs explicitly configured by this Agent."""
+        params = {
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
+        }
+        return {key: value for key, value in params.items() if value is not None}
 
 
 class AgentConfig(BaseModel):
@@ -54,11 +72,18 @@ class AgentConfig(BaseModel):
 
 @dataclasses.dataclass
 class AgentResult:
-    """Artifacts one agent produced for an episode -- the task scores these."""
+    """Artifacts one Agent produced for an episode.
+
+    ``finished`` is tri-state: ``True``/``False`` report a known completion
+    state, and ``None`` means the Agent does not track one. Agents that never
+    set it stay indistinguishable from Agents that finished normally, so
+    opting out never silently marks an episode untrainable.
+    """
 
     output: dict[str, Any] = dataclasses.field(default_factory=dict)
     transcript: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     info: dict[str, Any] = dataclasses.field(default_factory=dict)
+    finished: bool | None = None
 
 
 class Agent(ABC):

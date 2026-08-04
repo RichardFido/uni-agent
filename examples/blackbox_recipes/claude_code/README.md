@@ -17,8 +17,9 @@ The Claude Code tool image uses a Node builder to install the
 `FROM scratch` final stage. The sandbox base image therefore does not need Node
 or npm for the sidecar tool runtime.
 
-**This recipe is self-contained.** It shares only
-[`../sandbox_client.py`](../sandbox_client.py) with the mini-swe-agent recipe;
+**This recipe is self-contained.** It builds the sandbox via the shared
+[`uni_agent.sandbox`](../../uni_agent/sandbox) abstraction (`build_sandbox` + `SandboxConfig`),
+selecting the provider through `SANDBOX_PROVIDER` (default `openyuanrong`);
 everything else (`dataset.py`, `reward.py`, `build_tool.sh`, `run_train.sh`,
 config) lives in this directory and does not depend on `mini_swe_agent/`.
 
@@ -39,10 +40,10 @@ config) lives in this directory and does not depend on `mini_swe_agent/`.
 ```text
 [Rollouter Host: claude_code_runner]
   |
-  |-- SandboxClient.create(image, sidecar_image, sidecar_target="/opt/claude-code")
-  |     `-- openYuanrong: Sandbox(mounts=[Mount(target="/opt/mini-swe-agent", ...)])
+  |-- build_sandbox(SandboxConfig(provider=SANDBOX_PROVIDER, image, mounts=[{target="/opt/claude-code", image_url=sidecar}], upstream=...))
+  |     `-- provider Sandbox (e.g. openYuanrong: Sandbox(mounts=[Mount(target="/opt/claude-code", ...)]))
   |
-  |-- sandbox.run("<env> /opt/claude-code/bin/claude -p <task> ...")
+  |-- sandbox.exec_shell("<env> /opt/claude-code/bin/claude -p <task> ...")
   |     `-- [Inside Sandbox]
   |           claude binary, ANTHROPIC_BASE_URL -> 127.0.0.1:<proxy_port>
   |           commands run inside the SWE-bench sandbox /testbed
@@ -115,6 +116,7 @@ agent_runner_fqn: examples.blackbox_recipes.claude_code.claude_code_runner.claud
 | `SWE_AGENT_EVAL_TIMEOUT` | `600` | Reward evaluation timeout (seconds) |
 | `SWE_AGENT_RUN_TIMEOUT` | `7200` | Max wall time for the claude process in the sandbox |
 | `CLAUDE_CODE_TOOL_IMAGE` | `swr.cn-east-3.myhuaweicloud.com/openyuanrong/claude-code-tool:latest` | Sidecar tool image |
+| `CLAUDE_CODE_PROXY_PORT` | `38197` | Sandbox-local reverse tunnel port shared by OpenYuanrong and `ANTHROPIC_BASE_URL` |
 | `CONDA_ENV` | `testbed` | Conda env activated inside the sandbox before running claude |
 
 `AGENT_MAX_TURNS` is the only knob that bounds the agent. The trainer's

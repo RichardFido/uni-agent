@@ -1,33 +1,27 @@
 #!/usr/bin/env bash
 set -xeuo pipefail
 
-RAY_DATA_HOME=/mnt/hdfs/yyding
-NNODES=8
-GEN_TP=4
-CP=4
-ROLLOUT_RS=null
-TEST_FREQ=-1
-
-project_name=${PROJECT_NAME:-'Uni-Agent-Qwen3-Coder-30B-megatron'}
+project_name=${PROJECT_NAME:-"Uni-Agent-Qwen3.5-4B-megatron"}
 exp_name=${EXP_NAME:-"$(date +%Y%m%d%H)_exp"}
 
-RAY_DATA_HOME=${RAY_DATA_HOME:-"${HOME}/verl"}
-MODEL_PATH=${MODEL_PATH:-"${RAY_DATA_HOME}/models/Qwen3-Coder-30B-A3B-Instruct"}
-CKPTS_DIR=${CKPTS_DIR:-"${RAY_DATA_HOME}/ckpts/${project_name}/${exp_name}"}
-AGENT_LOG_DIR=${AGENT_LOG_DIR:-"${RAY_DATA_HOME}/logs/${project_name}/${exp_name}"}
-TRAIN_FILE=${TRAIN_FILE:-"${RAY_DATA_HOME}/data/uni_agent/swe_rebench_filtered_1150.parquet"}
-TEST_FILE=${TEST_FILE:-"${RAY_DATA_HOME}/data/uni_agent/swe_bench_verified.parquet"}
-RUNTIME_ENV=${RUNTIME_ENV:-"${RAY_DATA_HOME}/data/uni_agent/runtime_env.yaml"}
+MODEL_PATH=${MODEL_PATH:-"${DATA_DIR}/models/Qwen3.5-4B"}
+TRAIN_FILE=${TRAIN_FILE:-"${DATA_DIR}/data/uni_agent/swe_rebench_filtered_1150.parquet"}
+TEST_FILE=${TEST_FILE:-"${DATA_DIR}/data/uni_agent/swe_bench_verified.parquet"}
+
+RUNTIME_ENV=${RUNTIME_ENV:-"${RUNTIME_DIR}/data/uni_agent/runtime_env.yaml"}
+CKPTS_DIR=${CKPTS_DIR:-"${RUNTIME_DIR}/ckpts/${project_name}/${exp_name}"}
+AGENT_LOG_DIR=${AGENT_LOG_DIR:-"${RUNTIME_DIR}/logs/${project_name}/${exp_name}"}
 # Must be launched from the repository root so Ray packages both `verl/` and `uni_agent/`.
 # --- Agent-framework rollout (replaces the swe_agent agent-loop) --------------
 # Run-wide task base (agent + sandbox + sampling), loaded from this YAML by
 # uni_agent.framework.task_runner.run_task and deep-merged onto each row's task.
 # Same file-path idea as the old agent_loop_config_path; new (task-config) schema.
-TASK_CONFIG=${TASK_CONFIG:-"examples/agent_train/task_config.yaml"}
+TASK_CONFIG=${TASK_CONFIG:-"examples/quickstart/training/task_config_claude_code.yaml"}
 TOOL_PARSER=${TOOL_PARSER:-"qwen3_coder"}    # gateway tool-call parser; MUST match the model chat template
 GATEWAY_COUNT=${GATEWAY_COUNT:-8}            # gateway actors fronting the engine
-CONCURRENCY=${CONCURRENCY:-512}              # max in-flight rollout sessions (runner cap)
+CONCURRENCY=${CONCURRENCY:-256}              # max in-flight rollout sessions (runner cap)
 SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-"$(basename "${MODEL_PATH}")"}
+MASK_UNFINISHED_EPISODE=${MASK_UNFINISHED_EPISODE:-False}  # opt-in: zero the loss mask for unfinished episodes
 
 rollout_mode=${ROLLOUT_MODE:-"async"}
 rollout_name=${ROLLOUT_NAME:-"vllm"} # sglang or vllm
@@ -40,8 +34,9 @@ kl_coef=${KL_COEF:-0.0}
 use_kl_loss=${USE_KL_LOSS:-False}
 kl_loss_coef=${KL_LOSS_COEF:-0.0}
 
-clip_ratio_low=${CLIP_RATIO_LOW:-4e-4}
-clip_ratio_high=${CLIP_RATIO_HIGH:-4e-4}
+clip_ratio_low=${CLIP_RATIO_LOW:-0.2}
+clip_ratio_high=${CLIP_RATIO_HIGH:-0.28}
+clip_ratio_c=${CLIP_RATIO_C:-10.0}
 
 # Response length parameters
 max_prompt_length=${MAX_PROMPT_LENGTH:-$((1024 * 8))}
@@ -51,7 +46,7 @@ overlong_buffer_len=${OVERLONG_BUFFER_LEN:-$((1024 * 4))}  # unused
 overlong_penalty_factor=${OVERLONG_PENALTY_FACTOR:-1.0}
 
 loss_agg_mode=${LOSS_AGG_MODE:-"token-mean"}
-loss_mode=${LOSS_MODE:-gspo}
+loss_mode=${LOSS_MODE:-vanilla}
 
 # Algorithm
 temperature=${TEMPERATURE:-1.0}
@@ -63,13 +58,11 @@ val_top_k=${VAL_TOP_K:--1}
 
 # Performance Related Parameter
 use_dynamic_bsz=${USE_DYNAMIC_BSZ:-True}
-offload=${OFFLOAD:-True}
-gen_tp=${GEN_TP:-4}
+offload=${OFFLOAD:-False}
+gen_tp=${GEN_TP:-2}
 train_tp=${TP:-4}
-train_pp=${PP:-2}
+train_pp=${PP:-1}
 train_cp=${CP:-2}
-train_ep=${EP:-8}
-train_etp=${ETP:-1}
 actor_ppo_max_token_len=$(((max_prompt_length + max_response_length) / train_cp))
 infer_ppo_max_token_len=$(((max_prompt_length + max_response_length) / train_cp))
 
@@ -89,7 +82,7 @@ NGPUS_PER_NODE=${NGPUS_PER_NODE:-8}
 # parameter_sync_step defaults to 1 for colocate_async, so train_batch_size
 # (prompts/step) only needs to be > 0 (the old async mode used train_batch_size=0).
 # num_warmup_batches pre-fills the rollout pipeline before the first train step.
-train_prompt_bsz=${TRAIN_PROMPT_BSZ:-64}
+train_prompt_bsz=${TRAIN_PROMPT_BSZ:-32}
 n_resp_per_prompt=${N_RESP_PER_PROMPT:-8}
 train_prompt_mini_bsz=${PPO_MINI_BATCH_SIZE:-16}
 num_warmup_batches=${NUM_WARMUP_BATCHES:-1}
@@ -97,20 +90,17 @@ lr_decay_steps=${LR_DECAY_STEPS:-2000}
 test_freq=${TEST_FREQ:-10}
 
 # ============================================================================
-# Decoupled PPO (bypass_mode=False) + Rollout Correction (Rollout IS)
+# Rollout correction is disabled by default for the standard GRPO + PPO
+# baseline. Override these variables to enable behavior-anchor or decoupled
+# rollout-correction experiments.
 # ============================================================================
-bypass_mode=${BYPASS_MODE:-False}                                # False => decoupled PPO (recompute old_log_prob as proximal anchor)
-rollout_is=${ROLLOUT_IS:-token}                                  # token | sequence | null  (IS aggregation level)
+bypass_mode=${BYPASS_MODE:-False}                                # True => old_log_prob = rollout_log_prob
+bypass_loss_type=${BYPASS_LOSS_TYPE:-ppo_clip}                   # ppo_clip | reinforce
+rollout_is=${ROLLOUT_IS:-null}                                   # PPO clip already applies the IS ratio
 rollout_is_threshold=${ROLLOUT_IS_THRESHOLD:-2.0}                # single float => TIS upper clamp; "lo_hi" string => IcePop
 rollout_is_batch_normalize=${ROLLOUT_IS_BATCH_NORMALIZE:-False}  # normalize IS weights to mean=1.0 within a batch
-rollout_rs=${ROLLOUT_RS:-seq_mean_k1}                            # seq_mean_k1 | seq_mean_k3 | token_k1 | null
-rollout_rs_threshold=${ROLLOUT_RS_THRESHOLD:-"0.999_1.001"}      # k1: "lo_hi" ratio band; k3: single upper bound
-
-# ============================================================================
-# 30B MoE Router Replay (R3)
-# ============================================================================
-router_replay_mode=${ROUTER_REPLAY_MODE:-R3}                          # disabled | R2 | R3
-enable_rollout_routing_replay=${ENABLE_ROLLOUT_ROUTING_REPLAY:-True}  # required for R3 (rollout-side replay)
+rollout_rs=${ROLLOUT_RS:-null}                                   # no rejection sampling
+rollout_rs_threshold=${ROLLOUT_RS_THRESHOLD:-null}
 
 ray job submit --no-wait --runtime-env $RUNTIME_ENV \
     -- python3 -m verl.trainer.main_ppo \
@@ -138,9 +128,9 @@ ray job submit --no-wait --runtime-env $RUNTIME_ENV \
     actor_rollout_ref.actor.kl_loss_coef=${kl_loss_coef} \
     actor_rollout_ref.actor.clip_ratio_low=${clip_ratio_low} \
     actor_rollout_ref.actor.clip_ratio_high=${clip_ratio_high} \
-    actor_rollout_ref.actor.clip_ratio_c=10.0 \
+    actor_rollout_ref.actor.clip_ratio_c=${clip_ratio_c} \
     +actor_rollout_ref.model.override_config.model_config.max_position_embeddings=$((max_prompt_length + max_response_length)) \
-    actor_rollout_ref.model.use_fused_kernels=True \
+    actor_rollout_ref.model.use_fused_kernels=False \
     actor_rollout_ref.actor.use_dynamic_bsz=${use_dynamic_bsz} \
     actor_rollout_ref.actor.ppo_mini_batch_size=${train_prompt_mini_bsz} \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=${actor_ppo_max_token_len} \
@@ -160,19 +150,13 @@ ray job submit --no-wait --runtime-env $RUNTIME_ENV \
     actor_rollout_ref.actor.megatron.tensor_model_parallel_size=${train_tp} \
     actor_rollout_ref.actor.megatron.pipeline_model_parallel_size=${train_pp} \
     actor_rollout_ref.actor.megatron.context_parallel_size=${train_cp} \
-    actor_rollout_ref.actor.megatron.expert_model_parallel_size=${train_ep} \
-    actor_rollout_ref.actor.megatron.expert_tensor_parallel_size=${train_etp} \
-    +actor_rollout_ref.actor.megatron.override_transformer_config.apply_rope_fusion=True \
+    +actor_rollout_ref.actor.megatron.override_transformer_config.apply_rope_fusion=False \
     +actor_rollout_ref.actor.megatron.override_transformer_config.masked_softmax_fusion=True \
     +actor_rollout_ref.actor.megatron.override_transformer_config.bias_activation_fusion=True \
     +actor_rollout_ref.actor.megatron.override_transformer_config.bias_dropout_fusion=True \
     +actor_rollout_ref.actor.megatron.override_transformer_config.gradient_accumulation_fusion=True \
     +actor_rollout_ref.actor.megatron.override_transformer_config.deallocate_pipeline_outputs=True \
     +actor_rollout_ref.actor.megatron.override_transformer_config.persist_layer_norm=True \
-    +actor_rollout_ref.actor.megatron.override_transformer_config.moe_grouped_gemm=True \
-    +actor_rollout_ref.actor.megatron.override_transformer_config.moe_permute_fusion=True \
-    +actor_rollout_ref.actor.megatron.override_transformer_config.moe_token_dispatcher_type="alltoall" \
-    +actor_rollout_ref.actor.megatron.override_transformer_config.moe_router_dtype=fp32 \
     +actor_rollout_ref.actor.megatron.override_transformer_config.recompute_method=uniform \
     +actor_rollout_ref.actor.megatron.override_transformer_config.recompute_granularity=full \
     +actor_rollout_ref.actor.megatron.override_transformer_config.recompute_num_layers=1 \
@@ -182,8 +166,14 @@ ray job submit --no-wait --runtime-env $RUNTIME_ENV \
     algorithm.rollout_correction.rollout_is_batch_normalize=${rollout_is_batch_normalize} \
     algorithm.rollout_correction.rollout_rs=${rollout_rs} \
     algorithm.rollout_correction.rollout_rs_threshold="${rollout_rs_threshold}" \
-    actor_rollout_ref.actor.router_replay.mode=${router_replay_mode} \
-    actor_rollout_ref.rollout.enable_rollout_routing_replay=${enable_rollout_routing_replay} \
+    algorithm.rollout_correction.loss_type=${bypass_loss_type} \
+    ++actor_rollout_ref.actor.policy_loss.rollout_correction.bypass_mode=${bypass_mode} \
+    ++actor_rollout_ref.actor.policy_loss.rollout_correction.rollout_is=${rollout_is} \
+    ++actor_rollout_ref.actor.policy_loss.rollout_correction.rollout_is_threshold=${rollout_is_threshold} \
+    ++actor_rollout_ref.actor.policy_loss.rollout_correction.rollout_is_batch_normalize=${rollout_is_batch_normalize} \
+    ++actor_rollout_ref.actor.policy_loss.rollout_correction.rollout_rs=${rollout_rs} \
+    ++actor_rollout_ref.actor.policy_loss.rollout_correction.rollout_rs_threshold="${rollout_rs_threshold}" \
+    ++actor_rollout_ref.actor.policy_loss.rollout_correction.loss_type=${bypass_loss_type} \
     actor_rollout_ref.actor.entropy_coeff=0 \
     actor_rollout_ref.actor.loss_agg_mode=${loss_agg_mode} \
     +actor_rollout_ref.actor.checkpoint.save_contents=['model','hf_model'] \
@@ -196,11 +186,13 @@ ray job submit --no-wait --runtime-env $RUNTIME_ENV \
     ++actor_rollout_ref.rollout.custom.agent_framework.gateway_count=${GATEWAY_COUNT} \
     ++actor_rollout_ref.rollout.custom.agent_framework.log_dir=${AGENT_LOG_DIR} \
     ++actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_fqn=uni_agent.framework.task_runner.run_task \
-    ++actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.dispatch_mode=inline_async \
+    ++actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.dispatch_mode=ray_task \
     ++actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.max_concurrent_sessions=${CONCURRENCY} \
+    ++actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.trajectory_selection=longest \
     ++actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.task_config_path=${TASK_CONFIG} \
     ++actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.model_name=${SERVED_MODEL_NAME} \
     ++actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.report_reward=True \
+    ++actor_rollout_ref.rollout.custom.agent_framework.mask_unfinished_episode=${MASK_UNFINISHED_EPISODE} \
     ++actor_rollout_ref.rollout.custom.agent_framework.use_reward_loop_worker=False \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=${gen_tp} \
@@ -229,8 +221,6 @@ ray job submit --no-wait --runtime-env $RUNTIME_ENV \
     actor_rollout_ref.ref.megatron.tensor_model_parallel_size=${train_tp} \
     actor_rollout_ref.ref.megatron.pipeline_model_parallel_size=${train_pp} \
     actor_rollout_ref.ref.megatron.context_parallel_size=${train_cp} \
-    actor_rollout_ref.ref.megatron.expert_model_parallel_size=${train_ep} \
-    actor_rollout_ref.ref.megatron.expert_tensor_parallel_size=${train_etp} \
     reward.reward_manager.name=dapo \
     +reward.reward_kwargs.overlong_buffer_cfg.enable=${enable_overlong_buffer} \
     +reward.reward_kwargs.overlong_buffer_cfg.len=${overlong_buffer_len} \

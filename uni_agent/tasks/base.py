@@ -71,7 +71,8 @@ class TaskResult:
 
     reward: Any
     accuracy: float | None = None
-    info: dict[str, Any] | None = None
+    finished: bool | None = None
+    extra_info: dict[str, Any] | None = None
 
 
 class Task(ABC):

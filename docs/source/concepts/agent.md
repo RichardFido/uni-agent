@@ -20,10 +20,12 @@ class AgentConfig(BaseModel):
 `ModelConfig` contains:
 
 - `base_url`, `api_key`, and `model_name`.
-- `temperature`, `top_p`, and `top_k`.
+- Optional `temperature`, `top_p`, and `top_k` overrides.
 - Per-turn and episode token budgets.
 
-The model endpoint is runtime state. Dataset rows and Task YAML should define sampling behavior, but the live runner or Gateway injects `base_url`, credentials, and served model name last.
+The model endpoint is runtime state. Dataset rows and Task YAML may override sampling behavior; omitted sampling
+fields inherit the endpoint default (the rollout configuration during RL training). The live runner or Gateway
+injects `base_url`, credentials, and served model name last.
 
 ## Agent Contract
 
@@ -44,7 +46,8 @@ The Task has already started the Sandbox. The Agent must not stop it.
 
 - `output`: final structured output.
 - `transcript`: messages and Tool observations produced by a white-box loop.
-- `info`: implementation-specific metadata such as exit reason, token counts, or process status.
+- `info`: implementation-specific metadata such as token counts or process status.
+- `finished`: whether the episode completed normally. Defaults to `null`, meaning the Agent does not report a completion state; such episodes stay trainable.
 
 The Task decides how the resulting Sandbox state and AgentResult are scored.
 
@@ -56,7 +59,7 @@ The built-in ReAct Agent demonstrates the white-box pattern:
 2. Send messages and Tool schemas to an OpenAI-compatible model endpoint.
 3. Execute returned Tool calls.
 4. Append Tool observations to the transcript.
-5. Stop on a plain assistant answer, `submit`/`finish`, token limit, timeout budget, or max steps.
+5. Stop on `submit`/`finish`, token limit, timeout budget, or max steps.
 
 ReAct configuration exposes the loop:
 
@@ -85,6 +88,8 @@ The Claude Code Agent demonstrates the black-box pattern:
 2. Convert `ModelConfig` into the environment variables expected by the harness.
 3. Launch the harness through `sandbox.exec()`.
 4. Return process metadata while the Task evaluates the modified Sandbox.
+
+Claude Code sets `AgentResult.finished=true` when the process exits with code `0`.
 
 ```yaml
 agent:

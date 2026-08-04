@@ -70,7 +70,8 @@ class MyTask(Task):
         return TaskResult(
             reward=score,
             accuracy=score,
-            info={"score": score},
+            finished=agent_result.finished,
+            extra_info={"score": score},
         )
 ```
 
@@ -104,11 +105,20 @@ The Task converts that payload into `TaskResult`:
 TaskResult(
     reward=float(result["resolved"]),
     accuracy=float(result["resolved"]),
-    info=result,
+    finished=agent_result.finished,
+    extra_info=result,
 )
 ```
 
-Custom Tasks may return scalar, dense, rubric-based, or multi-component rewards. The framework consumes `TaskResult.reward`; additional metrics belong in `accuracy` and `info`.
+Custom Tasks may return scalar, dense, rubric-based, or multi-component rewards. The framework consumes
+`TaskResult.reward`; additional metrics belong in `accuracy` and `extra_info`.
+
+`TaskResult.finished` is factual episode metadata copied from
+`AgentResult.finished`; it does not decide whether the trajectory contributes to
+training. The Agent Framework owns that policy through
+`mask_unfinished_episode`, so the same Task Config can be reused for
+inference, evaluation, and different training runs without embedding optimizer
+behavior in the Task or dataset.
 
 ## Dataset Contract
 
