@@ -51,8 +51,8 @@ The run-level Task Config defines common behavior such as the Agent, Tools, Sand
   agent:
     name: react
     tools:
-      - name: stateful_shell
       - name: str_replace_editor
+      - name: stateful_shell
       - name: submit
     model:
       temperature: 0.8

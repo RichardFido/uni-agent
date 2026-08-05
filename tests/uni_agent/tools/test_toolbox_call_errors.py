@@ -10,8 +10,11 @@ sandbox / network -- the tools are tiny fakes, so it runs fast under ``pytest`` 
 from __future__ import annotations
 
 import asyncio
+import json
+from typing import Literal
 
 import pytest
+from pydantic import BaseModel, Field
 
 from uni_agent.tools import Tool, Toolbox, ToolError, ToolResult
 
@@ -56,9 +59,26 @@ class _Kaboom(Tool):
         raise RuntimeError("modal sandbox is not alive")
 
 
+class _ValidatedArguments(BaseModel):
+    query: str
+    limit: int = Field(default=1, ge=1)
+    mode: Literal["fast", "full"]
+    slug: str = Field(default="doc-default", json_schema_extra={"pattern": "^doc-"})
+
+
+class _Validated(Tool):
+    """Uses an args model so Toolbox validates before dispatch."""
+
+    name = "validated"
+    args_model = _ValidatedArguments
+
+    async def run(self, args, *, timeout=None):
+        return ToolResult(text=json.dumps(args, sort_keys=True))
+
+
 def _toolbox() -> Toolbox:
     sandbox = object()  # the fakes above never touch the sandbox
-    return Toolbox([_Echo(sandbox), _Boom(sandbox), _Slow(sandbox), _Kaboom(sandbox)])
+    return Toolbox([_Echo(sandbox), _Boom(sandbox), _Slow(sandbox), _Kaboom(sandbox), _Validated(sandbox)])
 
 
 # --------------------------- Toolbox.call: error returns ---------------------------
@@ -104,6 +124,33 @@ def test_valid_arguments_run_the_tool(raw):
     result = asyncio.run(_toolbox().call("echo", raw))
     assert result.status == "ok"
     assert result.text.startswith("args=")
+
+
+def test_arguments_are_validated_and_coerced_before_dispatch():
+    result = asyncio.run(
+        _toolbox().call(
+            "validated",
+            {"query": "docs", "limit": "2", "mode": "fast"},
+        )
+    )
+    assert result.status == "ok"
+    assert json.loads(result.text) == {"limit": 2, "mode": "fast", "query": "docs"}
+
+
+@pytest.mark.parametrize(
+    ("arguments", "needle"),
+    [
+        ({"mode": "fast"}, "`query`: Field required"),
+        ({"query": "docs", "mode": "invalid"}, "`mode`: Input should be 'fast' or 'full'"),
+        ({"query": "docs", "mode": "fast", "extra": True}, "parameters ['extra'] are not defined"),
+        ({"query": "docs", "mode": "fast", "limit": 0}, "`limit`: Input should be greater than or equal to 1"),
+        ({"query": "docs", "mode": "fast", "slug": "invalid"}, "`slug`: 'invalid' does not match '^doc-'"),
+    ],
+)
+def test_schema_validation_errors_are_returned_as_format_observations(arguments, needle):
+    result = asyncio.run(_toolbox().call("validated", arguments))
+    assert result.status == "format_error"
+    assert needle in result.text
 
 
 def test_timeout_is_forwarded_to_the_tool():

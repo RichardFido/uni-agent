@@ -19,7 +19,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from pydantic import BaseModel
+from jsonschema.validators import validator_for
+from pydantic import BaseModel, ValidationError
 
 if TYPE_CHECKING:
     from uni_agent.sandbox import SandboxBackend
@@ -355,7 +356,9 @@ class Toolbox:
                     f"Invalid action: function {name!r} is not defined in the tools list.\n"
                     f"Allowed functions should be one of: {self.names()}."
                 )
-            result = await tool.run(self._parse_arguments(name, args), timeout=timeout)
+            parsed_args = self._parse_arguments(name, args)
+            validated_args = self._validate_arguments(tool, parsed_args)
+            result = await tool.run(validated_args, timeout=timeout)
         except ToolCallFormatError as exc:
             return ToolResult(text=str(exc), status="format_error")
         except ToolError as exc:
@@ -394,6 +397,48 @@ class Toolbox:
                 f"Invalid action: arguments for {name!r} must be a JSON object, got {type(parsed).__name__}."
             )
         return parsed
+
+    @staticmethod
+    def _validate_arguments(tool: Tool, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Validate and coerce arguments against the same model used to publish the tool schema."""
+        if tool.args_model is None:
+            return arguments
+
+        parameter_schema = tool.schema()["function"]["parameters"]
+        allowed_parameters = set(parameter_schema.get("properties", {}))
+        unknown_parameters = sorted(set(arguments) - allowed_parameters)
+        if unknown_parameters:
+            raise ToolCallFormatError(
+                f"Invalid action: parameters {unknown_parameters} are not defined for function {tool.name!r}.\n"
+                f"Allowed parameters should be one of: {sorted(allowed_parameters)}."
+            )
+
+        try:
+            validated = tool.args_model.model_validate(arguments)
+        except ValidationError as exc:
+            details = "; ".join(
+                f"`{'.'.join(str(part) for part in error['loc']) or '<arguments>'}`: {error['msg']}"
+                for error in exc.errors()
+            )
+            raise ToolCallFormatError(
+                f"Invalid action: arguments for function {tool.name!r} failed schema validation: {details}."
+            ) from None
+
+        validated_arguments = validated.model_dump(mode="python", by_alias=True, exclude_unset=True)
+        validator = validator_for(parameter_schema)(parameter_schema)
+        schema_errors = sorted(
+            validator.iter_errors(validated_arguments),
+            key=lambda error: ".".join(str(part) for part in error.absolute_path),
+        )
+        if schema_errors:
+            details = "; ".join(
+                f"`{'.'.join(str(part) for part in error.absolute_path) or '<arguments>'}`: {error.message}"
+                for error in schema_errors
+            )
+            raise ToolCallFormatError(
+                f"Invalid action: arguments for function {tool.name!r} failed schema validation: {details}."
+            )
+        return validated_arguments
 
     async def close(self) -> None:
         """Close every tool (release open channels); never raises."""

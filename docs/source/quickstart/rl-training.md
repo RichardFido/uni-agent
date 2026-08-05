@@ -59,6 +59,7 @@ The Quickstart provides separate configs for the two Agent types:
         name: react
         max_steps: 200
         tools:
+          - name: str_replace_editor
           - name: stateful_shell
             command_timeout: 120
             env_vars:
@@ -67,7 +68,6 @@ The Quickstart provides separate configs for the two Agent types:
               MANPAGER: "cat"
               TQDM_DISABLE: "1"
               PIP_PROGRESS_BAR: "off"
-          - name: str_replace_editor
           - name: submit
         model:
           temperature: 1.0
@@ -82,6 +82,7 @@ The Quickstart provides separate configs for the two Agent types:
         name: react
         max_steps: 200
         tools:
+          - name: str_replace_editor
           - name: stateful_shell
             command_timeout: 120
             env_vars:
@@ -90,7 +91,6 @@ The Quickstart provides separate configs for the two Agent types:
               MANPAGER: "cat"
               TQDM_DISABLE: "1"
               PIP_PROGRESS_BAR: "off"
-          - name: str_replace_editor
           - name: submit
         model:
           temperature: 1.0

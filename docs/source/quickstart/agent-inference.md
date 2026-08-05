@@ -68,6 +68,7 @@ The Quickstart includes two ready-to-use configs:
         name: react
         max_steps: 100
         tools:
+          - name: str_replace_editor
           - name: stateful_shell
             command_timeout: 180
             env_vars:
@@ -75,7 +76,6 @@ The Quickstart includes two ready-to-use configs:
               PAGER: "cat"
               TQDM_DISABLE: "1"
               GIT_PAGER: "cat"
-          - name: str_replace_editor
           - name: submit
         model:
           temperature: 0.8
@@ -266,7 +266,7 @@ Claude Code is a black-box Agent Harness: the complete CLI runs inside the sandb
 
 ### ReAct Agent
 
-ReAct is a white-box Agent: Uni-Agent owns the interaction loop and exposes `stateful_shell`, `str_replace_editor`, and `submit` from `task_config_react.yaml`. The examples below run the same Agent with an external Doubao service and two verl-managed Qwen checkpoints.
+ReAct is a white-box Agent: Uni-Agent owns the interaction loop and exposes `str_replace_editor`, `stateful_shell`, and `submit` from `task_config_react.yaml`. The examples below run the same Agent with an external Doubao service and two verl-managed Qwen checkpoints.
 
 === "Qwen3-Coder-30B-A3B-Instruct"
 

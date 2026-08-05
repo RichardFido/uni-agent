@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -12,11 +13,73 @@ TOOLS = [
             "description": "search docs",
             "parameters": {
                 "type": "object",
-                "properties": {"query": {"type": "string"}},
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer"},
+                },
             },
         },
     }
 ]
+
+
+def test_qwen_vllm_parser_uses_tool_schema_for_argument_types():
+    import uni_agent.gateway.session.codec as codec_mod
+
+    class QwenTokenizer(FakeTokenizer):
+        def get_vocab(self):
+            return {"<tool_call>": 1, "</tool_call>": 2}
+
+    text = (
+        "<tool_call>\n"
+        "<function=search>\n"
+        "<parameter=query>docs</parameter>\n"
+        "<parameter=limit>2</parameter>\n"
+        "</function>\n"
+        "</tool_call>"
+    )
+    content, calls = codec_mod._process_tool_calls_vllm(text, TOOLS, "qwen3_coder", QwenTokenizer())
+
+    assert content == ""
+    assert json.loads(calls[0].arguments) == {"query": "docs", "limit": 2}
+
+
+def test_vllm_parser_is_constructed_with_request_tools(monkeypatch):
+    from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionToolsParam
+    from vllm.tool_parsers import ToolParserManager
+
+    import uni_agent.gateway.session.codec as codec_mod
+
+    seen = {}
+
+    class FakeParser:
+        def __init__(self, tokenizer, *, tools):
+            seen["tokenizer"] = tokenizer
+            seen["tools"] = tools
+
+        def extract_tool_calls(self, text, request):
+            seen["request"] = request
+            return SimpleNamespace(
+                tools_called=True,
+                content="visible",
+                tool_calls=[SimpleNamespace(function=SimpleNamespace(name="search", arguments='{"query":"x"}'))],
+            )
+
+    monkeypatch.setattr(
+        ToolParserManager,
+        "get_tool_parser",
+        classmethod(lambda cls, name: FakeParser),
+    )
+
+    tokenizer = FakeTokenizer()
+    content, calls = codec_mod._process_tool_calls_vllm("raw", TOOLS, "qwen3_coder", tokenizer)
+
+    assert content == "visible"
+    assert calls[0].name == "search"
+    assert seen["tokenizer"] is tokenizer
+    assert len(seen["tools"]) == 1
+    assert isinstance(seen["tools"][0], ChatCompletionToolsParam)
+    assert seen["request"].tools is seen["tools"]
 
 
 def test_tool_call_dispatch_prefers_sglang(monkeypatch):

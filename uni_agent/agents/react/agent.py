@@ -21,16 +21,6 @@ logger = logging.getLogger(__name__)
 #: Tool names that end the episode when the policy calls them.
 _FINISH_TOOLS = {"submit", "finish"}
 
-_NO_TOOL_CALL_RETRY = (
-    "No tool call found in your previous response. Use one of the available tools to continue. "
-    "When the task is complete, call the submit or finish tool."
-)
-
-
-def _has_configured_finish_tool(cfg: ReActConfig) -> bool:
-    """Whether this episode requires an explicit submit/finish call."""
-    return any(spec.get("name") in _FINISH_TOOLS for spec in cfg.tools)
-
 
 class ReActConfig(AgentConfig):
     """White-box launch params: host-side tools + step / timeout budgets."""
@@ -38,8 +28,8 @@ class ReActConfig(AgentConfig):
     name: str = "react"
     tools: list[dict] = Field(
         default_factory=lambda: [
-            {"name": "stateful_shell", "command_timeout": 120},
             {"name": "str_replace_editor"},
+            {"name": "stateful_shell", "command_timeout": 120},
             {"name": "submit"},
         ],
         description="Host-side tools exposed to the policy (each a {name, ...kwargs} entry). "
@@ -90,7 +80,6 @@ class ReActAgent(Agent):
             "num_tool_calls": 0,
             "timeouts": 0,
             "errors": 0,
-            "format_errors": 0,
             "total_tokens": 0,
         }
         termination_reason = "unknown"
@@ -115,8 +104,7 @@ class ReActAgent(Agent):
         logger.info(
             f"Episode done: termination_reason={termination_reason} steps={trajectory_info['steps']} "
             f"tool_calls={trajectory_info['num_tool_calls']} timeouts={trajectory_info['timeouts']} "
-            f"errors={trajectory_info['errors']} format_errors={trajectory_info['format_errors']} "
-            f"total_tokens={trajectory_info['total_tokens']}"
+            f"errors={trajectory_info['errors']} total_tokens={trajectory_info['total_tokens']}"
         )
         return AgentResult(transcript=transcript, info=trajectory_info, finished=termination_reason == "finished")
 
@@ -166,14 +154,8 @@ class ReActAgent(Agent):
             return "token_limit"
 
         if not tool_calls:
-            if _has_configured_finish_tool(cfg):
-                info["format_errors"] += 1
-                transcript.append({"role": "user", "content": _NO_TOOL_CALL_RETRY})
-                logger.warning("No tool call found; asking the policy to retry with an explicit tool call.")
-                return "completed"
-            else:
-                logger.info("💬 FINISHED: policy replied with plain text (no tool call).")
-                return "finished"
+            logger.info("💬 FINISHED: policy replied with plain text (no tool call).")
+            return "finished"
 
         # step 2: dispatch the tool calls
         saw_finish = False
@@ -191,7 +173,7 @@ class ReActAgent(Agent):
                 )
             elif tool_result.status != "ok":
                 info["errors"] += 1
-                logger.error(f"❌ TOOL {tool_result.status.upper()} ({name}):\n{observation}")
+                logger.warning(f"❌ TOOL {tool_result.status.upper()} ({name}):\n{observation}")
             else:
                 logger.info(f"👀 OBSERVATION ({name}):\n{observation}")
 

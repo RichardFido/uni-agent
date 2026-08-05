@@ -67,8 +67,6 @@ class LastAssistantStart:
     """Stable chain lengths captured immediately before its latest assistant."""
 
     response_ids_len: int
-    response_mask_len: int
-    response_logprobs_len: int
     message_history_len: int
     image_data_len: int
     video_data_len: int
@@ -418,16 +416,10 @@ class GatewaySession:
             if rollback_to_last_assistant:
                 last_assistant_start = selected_chain.last_assistant_start
                 assert last_assistant_start.response_ids_len <= len(buffer.response_ids)
-                assert last_assistant_start.response_mask_len <= len(buffer.response_mask)
-                assert last_assistant_start.response_logprobs_len <= len(buffer.response_logprobs)
-                rollback_dropped_trainable_tokens = sum(buffer.response_mask[last_assistant_start.response_mask_len :])
-                del buffer.response_ids[last_assistant_start.response_ids_len :]
-                del buffer.response_mask[last_assistant_start.response_mask_len :]
-                del buffer.response_logprobs[last_assistant_start.response_logprobs_len :]
+                rollback_dropped_trainable_tokens = sum(buffer.response_mask[last_assistant_start.response_ids_len :])
                 # One generation appends exactly one mark, so the rewritten
                 # assistant is always the last one.
                 del buffer.generation_versions[-1:]
-                self._assert_response_logprob_alignment(buffer)
 
                 if image_data is not None:
                     assert last_assistant_start.image_data_len <= len(image_data)
@@ -435,6 +427,23 @@ class GatewaySession:
                 if video_data is not None:
                     assert last_assistant_start.video_data_len <= len(video_data)
                     video_data = video_data[: last_assistant_start.video_data_len] or None
+                assert last_assistant_start.response_ids_len > 0
+                # Later rollbacks retain earlier trainable output; the snapshot was captured
+                # after the prior incremental GP, so remove that verified suffix as well.
+                generation_prompt = self._codec.generation_prompt
+                rollback_response_len = last_assistant_start.response_ids_len - len(generation_prompt)
+                if (
+                    rollback_response_len < 0
+                    or buffer.response_ids[rollback_response_len : last_assistant_start.response_ids_len]
+                    != generation_prompt
+                ):
+                    raise ValueError("Stored response does not end its assistant prefix with the generation prompt")
+                # Incremental encoding restores the turn separator with the replacement suffix.
+                rollback_response_len -= len(self._codec.turn_separator)
+                del buffer.response_ids[rollback_response_len:]
+                del buffer.response_mask[rollback_response_len:]
+                del buffer.response_logprobs[rollback_response_len:]
+                self._assert_response_logprob_alignment(buffer)
                 incremental_start = last_assistant_start.message_history_len
                 rollback_applied = True
             else:
@@ -550,6 +559,10 @@ class GatewaySession:
                 ranked_candidates.append((chain, len(chain.message_history), True))
                 continue
             if self._enable_last_assistant_rollback:
+                if assistant_start.response_ids_len == 0:
+                    # No response-side tokens predate this assistant, so rollback has nothing
+                    # to preserve. Omit it while still allowing an exact or later chain to win.
+                    continue
                 if assistant_start_len > deepest_rollback_service_value:
                     deepest_rollback_candidates = [chain]
                     deepest_rollback_service_value = assistant_start_len
@@ -653,8 +666,6 @@ class GatewaySession:
     ) -> LastAssistantStart:
         return LastAssistantStart(
             response_ids_len=len(buffer.response_ids),
-            response_mask_len=len(buffer.response_mask),
-            response_logprobs_len=len(buffer.response_logprobs),
             message_history_len=message_history_len,
             image_data_len=len(image_data or []),
             video_data_len=len(video_data or []),

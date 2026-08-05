@@ -12,6 +12,10 @@ async def logging_runner(**kwargs):
 
 
 class FakeTokenizer:
+    # The fake template terminates each message with a newline and has no
+    # additional turn separator after that close token.
+    eos_token_id = ord("\n")
+
     def apply_chat_template(self, messages, tokenize=True, add_generation_prompt=True, tools=None, **kwargs):
         parts = []
         for message in messages:

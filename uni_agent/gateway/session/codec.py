@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from verl.utils.tokenizer import normalize_token_ids
 from verl.utils.tokenizer.chat_template import apply_chat_template as _apply_chat_template
-from verl.utils.tokenizer.chat_template import initialize_system_prompt
+from verl.utils.tokenizer.chat_template import initialize_turn_separator
 
 logger = logging.getLogger("gateway")
 
@@ -39,6 +39,29 @@ _VLLM_TOOL_PARSER_ALIASES = {
     "qwen25": "qwen3_xml",
     "qwen3": "qwen3_xml",
 }
+
+
+def initialize_generation_prompt(processing_class, **apply_chat_template_kwargs) -> list[int]:
+    """Initialize the token suffix inserted by ``add_generation_prompt=True``."""
+    without_generation_prompt = normalize_token_ids(
+        _apply_chat_template(
+            processing_class,
+            [{"role": "user", "content": ""}],
+            add_generation_prompt=False,
+            **apply_chat_template_kwargs,
+        )
+    )
+    with_generation_prompt = normalize_token_ids(
+        _apply_chat_template(
+            processing_class,
+            [{"role": "user", "content": ""}],
+            add_generation_prompt=True,
+            **apply_chat_template_kwargs,
+        )
+    )
+    if with_generation_prompt[: len(without_generation_prompt)] != without_generation_prompt:
+        raise ValueError("Generation prompt is not a stable token suffix")
+    return with_generation_prompt[len(without_generation_prompt) :]
 
 
 def _canonicalize_tool_arguments_for_comparison(arguments: Any) -> tuple[str, Any]:
@@ -80,9 +103,10 @@ def _process_tool_calls_vllm(
     from vllm.tool_parsers import ToolParserManager
 
     parser_cls = ToolParserManager.get_tool_parser(parser_name)
-    parser = parser_cls(tokenizer)
+    vllm_tools = [ChatCompletionToolsParam(**tool) if isinstance(tool, dict) else tool for tool in tools]
+    parser = parser_cls(tokenizer, tools=vllm_tools)
     request = SimpleNamespace(
-        tools=[ChatCompletionToolsParam(**tool) if isinstance(tool, dict) else tool for tool in tools],
+        tools=vllm_tools,
         tool_choice="auto",
         skip_special_tokens=True,
     )
@@ -141,11 +165,26 @@ class MessageCodec:
         self._vision_info_extractor = vision_info_extractor or self._default_vision_info_extractor
         self._vision_info_extractor_kwargs = dict(vision_info_extractor_kwargs or {})
         self._apply_chat_template_kwargs = dict(apply_chat_template_kwargs or {})
-        self._system_prompt = initialize_system_prompt(
-            self._processor if self._processor is not None else tokenizer,
+        processing_class = self._processor if self._processor is not None else tokenizer
+        self._generation_prompt = initialize_generation_prompt(
+            processing_class,
+            **self._apply_chat_template_kwargs,
+        )
+        self._turn_separator = initialize_turn_separator(
+            processing_class,
             **self._apply_chat_template_kwargs,
         )
         self._tool_parser_name = tool_parser_name
+
+    @property
+    def generation_prompt(self) -> list[int]:
+        """Return the configured chat template's generation-prompt token suffix."""
+        return list(self._generation_prompt)
+
+    @property
+    def turn_separator(self) -> list[int]:
+        """Return the configured chat template's inter-turn separator tokens."""
+        return list(self._turn_separator)
 
     async def _default_vision_info_extractor(
         self,
@@ -195,6 +234,31 @@ class MessageCodec:
             **self._vision_info_extractor_kwargs,
         )
 
+    def _encode_prompt_text(
+        self,
+        prompt: str,
+        image_data: list[Any] | None = None,
+        video_data: list[Any] | None = None,
+    ) -> list[int]:
+        """Encode rendered prompt text with the configured tokenizer or processor."""
+        if self._processor is None:
+            return normalize_token_ids(self._tokenizer.encode(prompt, add_special_tokens=False))
+
+        videos = video_data
+        video_metadata = None
+        if videos is not None:
+            videos, video_metadata = zip(*videos, strict=False)
+            videos, video_metadata = list(videos), list(video_metadata)
+        model_inputs = self._processor(
+            text=[prompt],
+            images=image_data,
+            videos=videos,
+            video_metadata=video_metadata,
+            return_tensors="pt",
+            do_sample_frames=False,
+        )
+        return normalize_token_ids(model_inputs["input_ids"])
+
     def encode_full(
         self,
         messages: list[dict[str, Any]],
@@ -203,80 +267,63 @@ class MessageCodec:
         video_data: list[Any] | None = None,
     ) -> list[int]:
         """Encode a full chat history into prompt token IDs."""
-        if self._processor is not None:
-            raw_prompt = _apply_chat_template(
-                self._processor,
-                messages,
-                tools=tools,
-                add_generation_prompt=True,
-                tokenize=False,
-                **self._apply_chat_template_kwargs,
-            )
-            videos = video_data
-            video_metadata = None
-            if videos is not None:
-                videos, video_metadata = zip(*videos, strict=False)
-                videos, video_metadata = list(videos), list(video_metadata)
-            model_inputs = self._processor(
-                text=[raw_prompt],
-                images=image_data,
-                videos=videos,
-                video_metadata=video_metadata,
-                return_tensors="pt",
-                do_sample_frames=False,
-            )
-            return normalize_token_ids(model_inputs["input_ids"])
-
-        return normalize_token_ids(
-            _apply_chat_template(
-                self._tokenizer,
-                messages,
-                tools=tools,
-                add_generation_prompt=True,
-                **self._apply_chat_template_kwargs,
-            )
+        processing_class = self._processor if self._processor is not None else self._tokenizer
+        raw_prompt = _apply_chat_template(
+            processing_class,
+            messages,
+            tools=tools,
+            add_generation_prompt=True,
+            tokenize=False,
+            **self._apply_chat_template_kwargs,
         )
+        return self._encode_prompt_text(raw_prompt, image_data, video_data)
 
-    # TODO: check if delta tokenization is better than remove_system_prompt
     def encode_incremental(
         self,
         messages: list[dict[str, Any]],
         image_data: list[Any] | None = None,
         video_data: list[Any] | None = None,
     ) -> list[int]:
-        """Encode continuation messages without the cached system prompt prefix."""
-        if self._processor is not None:
-            raw_prompt = _apply_chat_template(
-                self._processor,
-                messages,
-                add_generation_prompt=True,
-                tokenize=False,
-                **self._apply_chat_template_kwargs,
-            )
-            videos = video_data
-            video_metadata = None
-            if videos is not None:
-                videos, video_metadata = zip(*videos, strict=False)
-                videos, video_metadata = list(videos), list(video_metadata)
-            model_inputs = self._processor(
-                text=[raw_prompt],
-                images=image_data,
-                videos=videos,
-                video_metadata=video_metadata,
-                return_tensors="pt",
-                do_sample_frames=False,
-            )
-            ids = normalize_token_ids(model_inputs["input_ids"])
-        else:
-            ids = normalize_token_ids(
-                _apply_chat_template(
-                    self._tokenizer,
-                    messages,
-                    add_generation_prompt=True,
-                    **self._apply_chat_template_kwargs,
-                )
-            )
-        return ids[len(self._system_prompt) :]
+        """Encode continuation messages using a dummy-user anchored delta."""
+        if not messages:
+            return []
+
+        processing_class = self._processor if self._processor is not None else self._tokenizer
+        anchor_content = [{"type": "text", "text": ""}] if self._processor is not None else ""
+        anchor = [{"role": "user", "content": anchor_content}]
+
+        if any(message.get("role") == "assistant" for message in messages[1:]):
+            raise ValueError("An incremental assistant message may only appear first")
+
+        # TODO: Replace this user/tool empty-user fallback with continuous-token merging.
+        # A user -> tool anchor is not valid for every chat template.
+        anchor_prompt = _apply_chat_template(
+            processing_class,
+            anchor,
+            add_generation_prompt=False,
+            tokenize=False,
+            **self._apply_chat_template_kwargs,
+        )
+        full_prompt = _apply_chat_template(
+            processing_class,
+            anchor + messages,
+            add_generation_prompt=True,
+            tokenize=False,
+            **self._apply_chat_template_kwargs,
+        )
+        prefix_prompt = anchor_prompt
+        if self._turn_separator:
+            separator_text = self._tokenizer.decode(self._turn_separator, skip_special_tokens=False)
+            if not separator_text or not anchor_prompt.endswith(separator_text):
+                raise ValueError("Turn separator is not a stable text suffix")
+            prefix_prompt = anchor_prompt[: -len(separator_text)]
+        if not full_prompt.startswith(prefix_prompt):
+            raise ValueError("Incremental chat template is not prefix-stable")
+        return self._encode_prompt_text(
+            full_prompt[len(prefix_prompt) :],
+            image_data,
+            video_data,
+        )
 
     async def decode_response(
         self,

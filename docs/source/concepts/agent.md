@@ -69,8 +69,8 @@ agent:
   max_steps: 200
   action_timeout: 300
   tools:
-    - name: stateful_shell
     - name: str_replace_editor
+    - name: stateful_shell
     - name: submit
   model:
     temperature: 0.8

@@ -5,6 +5,7 @@
     name: react
     max_steps: 100
     tools:
+      - name: str_replace_editor
       - name: stateful_shell
         command_timeout: 180
         env_vars:
@@ -12,7 +13,6 @@
           PAGER: "cat"
           TQDM_DISABLE: "1"
           GIT_PAGER: "cat"
-      - name: str_replace_editor
       - name: submit
     model:
       temperature: 0.8

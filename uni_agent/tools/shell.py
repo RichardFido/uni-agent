@@ -13,7 +13,6 @@ exec. Providers with ``supports_shell`` skip tmux entirely.
 from __future__ import annotations
 
 import asyncio
-import base64
 import dataclasses
 import logging
 import re
@@ -126,11 +125,10 @@ async def open_shell_session(
     return session
 
 
-def _capture_wrapper(command: str, out: str, err: str, rc: str, *, signal: str | None, sock: str) -> str:
-    """Build the shell line running ``command`` under the file-capture protocol."""
-    b64 = base64.b64encode(command.encode()).decode("ascii")
+def _capture_wrapper(command_path: str, out: str, err: str, rc: str, *, signal: str | None, sock: str) -> str:
+    """Build the shell line loading ``command_path`` under the file-capture protocol."""
     line = (
-        f"eval \"$(printf %s '{b64}' | base64 -d)\" "
+        f'eval "$(cat {shlex.quote(command_path)})" '
         f"> {shlex.quote(out)} 2> {shlex.quote(err)}; "
         f'__rc=$?; printf %s "$__rc" > {shlex.quote(rc)}.part '
         f"&& mv {shlex.quote(rc)}.part {shlex.quote(rc)}"
@@ -249,9 +247,12 @@ class TmuxShell:
         cid = self._counter + 1
         self._counter = cid
         out, err, rc = self._paths(cid)
-        line = _capture_wrapper(command, out, err, rc, signal=self._chan(cid), sock=self._sock)
-        # Type the wrapped line then press Enter. `--` ends option parsing so a
-        # command starting with `-` is still typed literally.
+        command_path = f"{self._dir}/cmd_{cid}.input"
+        # Keep arbitrary-size command text out of tmux's command argv: tmux
+        # rejects an oversized `send-keys` argument before it reaches the pane.
+        await self.backend.write_file(command_path, command)
+        line = _capture_wrapper(command_path, out, err, rc, signal=self._chan(cid), sock=self._sock)
+        # Type the short wrapper then press Enter.
         res = await self.backend.exec(
             self._tmux("send-keys", "-t", self.session_id, "--", line, "Enter")
         )
@@ -270,7 +271,7 @@ class TmuxShell:
     async def run(self, command: str, *, timeout: float = 120.0) -> CommandResult:
         start = time.monotonic()
         cid = await self.start_command(command)
-        out, err, rc = self._paths(cid)
+        out, err, _ = self._paths(cid)
         chan = self._chan(cid)
         timed_out = False
         code: int | None = None
@@ -281,9 +282,8 @@ class TmuxShell:
                 break
             elapsed = time.monotonic() - start
             if elapsed >= timeout:
-                await self.interrupt()
-                code = await self.poll(cid)
-                timed_out = code is None
+                timed_out = True
+                code = await self.interrupt(cid)
                 break
             # Event-driven wakeup: block on the command's tmux wait channel to
             # return the instant it signals. poll() stays the source of truth, so a
@@ -314,10 +314,22 @@ class TmuxShell:
         if res.exit_code != 0:
             raise RuntimeError(f"send_keys failed: {res.stderr.strip()}")
 
-    async def interrupt(self) -> None:
-        await self.backend.exec(
-            self._tmux("send-keys", "-t", self.session_id, "C-c")
-        )
+    async def interrupt(self, command_id: int | None = None) -> int | None:
+        """Send Ctrl-C, then suspend and kill the current job if it stays alive."""
+        await self.send_keys("C-c")
+        if command_id is None:
+            return None
+
+        await asyncio.sleep(2)
+        code = await self.poll(command_id)
+        if code is not None:
+            return code
+
+        await self.send_keys("C-z")
+        await asyncio.sleep(2)
+        await self.send_keys(["kill -KILL %+", "Enter"])
+        await asyncio.sleep(1)
+        return await self.poll(command_id)
 
     async def capture_pane(self, *, entire: bool = False) -> str:
         args = self._tmux("capture-pane", "-p")
