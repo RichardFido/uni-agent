@@ -1,9 +1,27 @@
 import pytest
 
 from uni_agent.framework import task_runner
-from uni_agent.framework.task_runner import _reward_info_from_result
+from uni_agent.framework.task_runner import _inject_gateway_tunnel, _reward_info_from_result
 from uni_agent.gateway.session import SessionHandle
 from uni_agent.tasks import TaskConfig, TaskResult
+
+
+def test_inject_gateway_tunnel_fills_upstream_and_keeps_proxy_port_in_sync():
+    task = {
+        "sandbox": {"sandbox_kwargs": {"proxy_port": 38197, "image": "x"}},
+        "agent": {"step_limit": 10},
+    }
+    merged = _inject_gateway_tunnel(task, "http://gateway.example:40169/sessions/abc/v1")
+
+    assert merged["sandbox"]["sandbox_kwargs"]["upstream"] == "gateway.example:40169"
+    assert merged["sandbox"]["sandbox_kwargs"]["proxy_port"] == 38197
+    assert merged["agent"]["proxy_port"] == 38197
+
+
+def test_inject_gateway_tunnel_raises_without_port():
+    task = {"sandbox": {"sandbox_kwargs": {"proxy_port": 38197}}}
+    with pytest.raises(ValueError, match="cannot derive gateway tunnel upstream"):
+        _inject_gateway_tunnel(task, "http://gateway.example/v1")
 
 
 def test_task_result_positional_field_order():

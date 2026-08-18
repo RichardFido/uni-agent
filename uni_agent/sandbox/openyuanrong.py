@@ -11,6 +11,7 @@ import logging
 import os
 import shlex
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -24,6 +25,29 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _sdk_initialized = False
+
+#: Registry host that mirrors the canonical open-source SWE images for the
+#: openyuanrong sandbox (env-overridable).
+_OPENYUANRONG_REGISTRY = os.getenv(
+    "OPENYUANRONG_IMAGE_REGISTRY", "swr.cn-east-3.myhuaweicloud.com/openyuanrong"
+)
+
+
+def _to_openyuanrong_image(image: str) -> str:
+    """Map a canonical open-source SWE image ref to the openyuanrong registry.
+
+    Dataset rows carry provider-agnostic refs (e.g. ``swerebench/sweb.eval.x86_64.<id>``);
+    the openyuanrong sandbox pulls from its own registry, so such refs get prefixed with
+    the registry host. Images that are already full addresses (e.g. the prebuilt tool
+    image) pass through unchanged.
+
+    NOTE: the exact collection path/tag inside the registry must match what is actually
+    pushed there -- adjust ``OPENYUANRONG_IMAGE_REGISTRY`` (or this mapping) if the
+    registry lays the SWE images out differently.
+    """
+    if image.startswith("swebench/") or image.startswith("swerebench/"):
+        return f"{_OPENYUANRONG_REGISTRY}/{image}"
+    return image
 
 
 def _resolve_sandbox_name() -> str | None:
@@ -108,10 +132,10 @@ class OpenyuanrongSandbox(Sandbox):
         *,
         image: str,
         runtime_timeout: float = 3600.0,
-        cpu: int = 1000,
-        memory: int = 2048,
-        cpu_limit: int = 4000,
-        mem_limit: int = 8192,
+        cpu: int = 2000,
+        memory: int = 4096,
+        cpu_limit: int = 8000,
+        mem_limit: int = 12288,
         idle_timeout: int = 7200,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
@@ -141,7 +165,7 @@ class OpenyuanrongSandbox(Sandbox):
 
     @classmethod
     def from_config(cls, config: SandboxConfig) -> OpenyuanrongSandbox:
-        return cls(image=config.image, runtime_timeout=config.runtime_timeout, **config.sandbox_kwargs)
+        return cls(image=_to_openyuanrong_image(config.image), runtime_timeout=config.runtime_timeout, **config.sandbox_kwargs)
 
     # ----- public: control plane -----
     async def start(self) -> None:

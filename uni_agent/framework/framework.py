@@ -54,6 +54,10 @@ class _RunnerConfig:
     dispatch_mode: str
     max_concurrent_sessions: int
     trajectory_selection: str = "all"
+    # Hard cap per-session runtime. A runner that neither finishes nor raises
+    # (e.g. a remote sandbox hung after OOM without surfacing an error) would
+    # otherwise hold a concurrency slot forever and stall the whole batch.
+    session_timeout_seconds: float = 1800.0
 
     def __post_init__(self) -> None:
         if not self.runner_fqn:
@@ -64,6 +68,8 @@ class _RunnerConfig:
             raise ValueError(f"max_concurrent_sessions must be non-negative, got {self.max_concurrent_sessions}")
         if self.trajectory_selection not in {"all", "longest"}:
             raise ValueError(f"Unknown trajectory selection: {self.trajectory_selection}. Expected 'all' or 'longest'")
+        if self.session_timeout_seconds <= 0:
+            raise ValueError(f"session_timeout_seconds must be positive, got {self.session_timeout_seconds}")
 
     @classmethod
     def from_config(cls, runner_name: object, runner_cfg) -> _RunnerConfig:
@@ -82,6 +88,7 @@ class _RunnerConfig:
         dispatch_mode = str(runner_cfg.get("dispatch_mode", "inline_async"))
         max_concurrent_sessions = int(runner_cfg.get("max_concurrent_sessions", 0) or 0)
         trajectory_selection = str(runner_cfg.get("trajectory_selection", "all"))
+        session_timeout_seconds = float(runner_cfg.get("session_timeout_seconds", 1800))
         try:
             return cls(
                 runner_fqn="" if runner_fqn is None else str(runner_fqn),
@@ -89,6 +96,7 @@ class _RunnerConfig:
                 dispatch_mode=dispatch_mode,
                 max_concurrent_sessions=max_concurrent_sessions,
                 trajectory_selection=trajectory_selection,
+                session_timeout_seconds=session_timeout_seconds,
             )
         except ValueError as exc:
             raise ValueError(f"agent_runners.{runner_name}: {exc}") from exc
@@ -692,7 +700,14 @@ class OpenAICompatibleAgentFramework(AgentFramework):
                         tools_kwargs=tools_kwargs,
                         log_context=task_log,
                     )
-                    await object_ref
+                    # Guard against runners that hang without raising (e.g. a
+                    # remote sandbox that OOM-killed the kernel and never returns).
+                    # Without this cap a single stuck session would hold its
+                    # concurrency slot forever and stall the whole training batch.
+                    await asyncio.wait_for(
+                        object_ref,
+                        timeout=runner_config.session_timeout_seconds,
+                    )
                 else:
                     runner = self._inline_runners[runner_name]
                     await runner(

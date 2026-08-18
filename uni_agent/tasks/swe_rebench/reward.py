@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -157,7 +158,11 @@ def _get_eval_report(metadata, eval_output: str):
     return eval_report
 
 
-async def compute_reward(metadata, sandbox, eval_timeout: float = 300.0) -> dict:
+async def compute_reward(metadata, sandbox, eval_timeout: float | None = None) -> dict:
+    # Env SWE_AGENT_EVAL_TIMEOUT wins when set; falls back to 600s default here,
+    # matching the value exported by the recipes' run_train.sh.
+    if eval_timeout is None:
+        eval_timeout = float(os.environ.get("SWE_AGENT_EVAL_TIMEOUT", 600.0))
     result = {
         "eval_completed": False,
         "eval_execution_time": None,

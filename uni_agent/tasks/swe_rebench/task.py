@@ -18,15 +18,32 @@ from ..registry import register_task
 
 logger = logging.getLogger(__name__)
 
-# Remove the repo's own tags + unreachable history so a later "future" tag/commit
-# can't leak the fix to the agent. Best-effort (`|| true`); runs once in /testbed.
-_GIT_CLEAN_HISTORY = " && ".join(
-    [
-        "git tag -d $(git tag -l) || true",
-        "git reflog expire --expire=now --all || true",
-        "git gc --prune=now || true",
-    ]
-)
+def git_clean_history(base_commit: str) -> str:
+    """Return the shell script that cuts future (answer) history out of /testbed.
+
+    The script moves main/HEAD onto ``base_commit`` so future (answer) commits
+    are unreachable, then deletes every other branch/remote/tag ref and prunes
+    unreachable objects. This must be a function because the exact commands
+    depend on the per-sample ``base_commit`` (it lives on the dataset row, so it
+    is not available at module import time). Best-effort (``|| true``); runs
+    once in /testbed.
+    """
+    return " && ".join(
+        [
+            # Move main/HEAD onto base_commit so future (answer) commits are cut
+            # out of the reachable history. Otherwise git log --all / git show can
+            # still reach the reference fix through the main-branch ancestor chain
+            # or leftover release tags even after tag-deletion + gc.
+            f"git -C /testbed checkout -q {base_commit}",
+            f"git -C /testbed branch -q -f main {base_commit}",
+            f"git -C /testbed symbolic-ref HEAD refs/heads/main",
+            # Delete every other branch/remote/tag ref that could reference future commits.
+            "git -C /testbed for-each-ref --format='%(refname)' refs/heads/ refs/remotes/ refs/tags/ | "
+            "grep -v '^refs/heads/main$' | while read ref; do git -C /testbed update-ref -d \"$ref\"; done",
+            "git -C /testbed reflog expire --expire=now --all || true",
+            "git -C /testbed gc --prune=now || true",
+        ]
+    )
 
 
 class SWEREBenchTaskConfig(TaskConfig):
@@ -54,7 +71,8 @@ class SWEREBenchTask(Task):
         )
         async with self.build_sandbox() as sandbox:
             # Clean future history before anything reads the repo.
-            await sandbox.exec_shell(_GIT_CLEAN_HISTORY, workdir="/testbed")
+            base_commit = sample["base_commit"]
+            await sandbox.exec_shell(git_clean_history(base_commit), workdir="/testbed")
 
             if cfg.run_oracle_solution:
                 logger.info("applying gold patch to /testbed")

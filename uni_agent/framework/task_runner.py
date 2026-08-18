@@ -6,12 +6,35 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from uni_agent.sandbox.tunnel import extract_upstream
 from uni_agent.tasks import TaskConfigResolver, TaskResult, get_task
+from uni_agent.tasks.config import _deep_merge
 
 if TYPE_CHECKING:
     from uni_agent.gateway.session import SessionHandle
 
 logger = logging.getLogger(__name__)
+
+
+def _inject_gateway_tunnel(task: dict[str, Any], base_url: str) -> dict[str, Any]:
+    """Fill the runtime side of an openyuanrong gateway reverse tunnel.
+
+    The sandbox config declares its tunnel port via ``sandbox_kwargs.proxy_port``;
+    only ``upstream`` (the gateway host:port) is runtime-derived from the session's
+    ``base_url`` and must be injected here. ``agent.proxy_port`` is kept in sync so
+    the agent's own URL rewrite targets the same sandbox-internal port.
+    """
+    upstream = extract_upstream(base_url)
+    if upstream is None:
+        raise ValueError(f"cannot derive gateway tunnel upstream from base_url={base_url!r}")
+    proxy_port = task["sandbox"]["sandbox_kwargs"]["proxy_port"]
+    return _deep_merge(
+        task,
+        {
+            "sandbox": {"sandbox_kwargs": {"upstream": upstream}},
+            "agent": {"proxy_port": proxy_port},
+        },
+    )
 
 
 async def run_task(
@@ -53,6 +76,13 @@ async def run_task(
             "model_name": model_name,
         },
     )
+
+    # openyuanrong reverse tunnel: the sandbox config pins the in-sandbox tunnel
+    # port (sandbox_kwargs.proxy_port); only the gateway upstream is runtime-derived
+    # (session.base_url), so fill it in here when a tunnel is configured.
+    tunnel_port = (task.get("sandbox") or {}).get("sandbox_kwargs", {}).get("proxy_port")
+    if tunnel_port and session.base_url:
+        task = _inject_gateway_tunnel(task, session.base_url)
 
     task_name = task.get("name")
     logger.info("run_task start: task=%s sample_index=%s", task_name, sample_index)
