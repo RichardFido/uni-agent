@@ -1,11 +1,12 @@
 """Tests for the mini-swe-agent agent's host-side glue.
 
 mini-swe-agent runs entirely *inside* the sandbox from a prebuilt tool image
-mounted at ``/opt/mini-swe-agent``. The agent's host-side glue is thin: rewrite
-the gateway URL to the sandbox-internal tunnel, base64-encode the task config,
-pipe it into the tool-image python via stdin, and parse the result JSON out of
-stdout (litellm noise tolerated). These tests cover that glue with a tiny
-in-memory fake sandbox, so they run fast under ``pytest`` (or ``python``).
+mounted at ``/opt/mini-swe-agent``. The agent's host-side glue is thin:
+base64-encode the task config (the gateway URL is passed through as-is; the
+reverse-tunnel rewrite happens in ``run_task``), pipe it into the tool-image
+python via stdin, and parse the result JSON out of stdout (litellm noise
+tolerated). These tests cover that glue with a tiny in-memory fake sandbox, so
+they run fast under ``pytest`` (or ``python``).
 """
 
 from __future__ import annotations
@@ -24,7 +25,6 @@ from uni_agent.agents.mini_swe_agent.agent import (
     parse_agent_result,
 )
 from uni_agent.sandbox.base import ExecResult
-from uni_agent.sandbox.tunnel import DEFAULT_PROXY_PORT
 
 
 class _FakeSandbox:
@@ -40,8 +40,8 @@ class _FakeSandbox:
         return ExecResult(exit_code=self._exit_code, stdout=self._stdout, stderr="")
 
 
-def _agent(**config_kwargs) -> MiniSweAgentAgent:
-    model = ModelConfig(base_url="http://gateway:8000/v1", model_name="policy")
+def _agent(base_url: str = "http://gateway:8000/v1", **config_kwargs) -> MiniSweAgentAgent:
+    model = ModelConfig(base_url=base_url, model_name="policy")
     return MiniSweAgentAgent(MiniSweAgentConfig(model=model, **config_kwargs))
 
 
@@ -137,10 +137,11 @@ def test_run_pipes_config_and_parses_stdout_into_result():
     assert "base64 -d" in cmd
     assert "/opt/mini-swe-agent/bin/python /opt/mini-swe-agent/bin/run_agent.py" in cmd
 
-    # The decoded task config carries the user task, the rewritten gateway URL, and step_limit.
+    # The decoded task config carries the user task, the gateway URL (base_url
+    # passed through unchanged -- run_task does the tunnel rewrite), and step_limit.
     task_config = _decode_task_config(cmd)
     assert task_config["task"] == "fix the off-by-one bug"
-    assert task_config["gateway_url"] == f"http://127.0.0.1:{DEFAULT_PROXY_PORT}/v1"
+    assert task_config["gateway_url"] == "http://gateway:8000/v1"
     assert task_config["agent"]["step_limit"] == 25
 
     # The result is parsed out of stdout (litellm noise tolerated) into an AgentResult.
@@ -161,12 +162,13 @@ def test_run_marks_unfinished_when_not_submitted():
     assert result.info["exit_status"] == "error"
 
 
-def test_run_honors_custom_proxy_port():
+def test_run_passes_base_url_through_unchanged():
     sandbox = _FakeSandbox(stdout=json.dumps({"exit_status": "Submitted", "submission": "diff"}))
-    agent = _agent(proxy_port=4242)
+    # A tunnel-rewritten base_url (what run_task injects) is forwarded verbatim.
+    agent = _agent(base_url="http://127.0.0.1:38197/sessions/abc/v1")
     asyncio.run(agent.run(sandbox=sandbox, messages=[{"role": "user", "content": "task"}]))
     task_config = _decode_task_config(sandbox.exec_shell_calls[0])
-    assert task_config["gateway_url"] == "http://127.0.0.1:4242/v1"
+    assert task_config["gateway_url"] == "http://127.0.0.1:38197/sessions/abc/v1"
 
 
 if __name__ == "__main__":

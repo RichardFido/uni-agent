@@ -42,9 +42,10 @@ defaults) and deep-merges the runtime model binding.
   |
   |-- TaskConfigResolver: task_config YAML + sample row + runtime model
   |     `-- sandbox: provider=openyuanrong, image=<canonical>, mounts=[tool image -> /opt/mini-swe-agent]
-  |     `-- agent:   MiniSweAgentAgent (step_limit/run_timeout/conda_env/proxy_port)
+  |     `-- agent:   MiniSweAgentAgent (step_limit/run_timeout/conda_env)
   |
   |-- [run_task tunnel injection] sandbox_kwargs.upstream = gateway host:port (runtime)
+  |     `-- agent.model.base_url rewritten to http://127.0.0.1:<proxy_port> (runtime)
   |
   |-- OpenyuanrongSandbox.start() (mounts + upstream/proxy_port reverse tunnel)
   |-- MiniSweAgentAgent.run()
@@ -125,10 +126,9 @@ tune the agent without touching the training script:
 | `agent.run_timeout` | `7200` | Max wall time for the agent process in the sandbox |
 | `agent.conda_env` | `testbed` | Conda env activated inside the sandbox before running the agent |
 
-> `sandbox.sandbox_kwargs.upstream` and `agent.model.base_url/api_key/model_name`
-> are **runtime-derived** (`session.base_url`) and injected by `run_task`; do not
-> set them in the YAML. `agent.proxy_port` is kept in sync with the sandbox's
-> `proxy_port` automatically.
+> `sandbox.sandbox_kwargs.upstream` and `agent.model.base_url` are runtime-managed
+> by `run_task`: the gateway upstream is injected from the session, and base_url is
+> rewritten through the tunnel (openyuanrong sandboxes only) when `proxy_port` is set.
 
 ### Training script env vars (selected)
 
@@ -138,13 +138,13 @@ tune the agent without touching the training script:
 | `OPENYUANRONG_IMAGE_REGISTRY` | `swr.cn-east-3.myhuaweicloud.com/openyuanrong` | Override the canonical→registry image prefix |
 | `SANDBOX_NAME_PREFIX` | `mini-swe-` | Prefix for created sandbox names |
 | `TASK_CONFIG` | `examples/blackbox_recipes/mini_swe_agent/task_config_mini_swe_agent.yaml` | Task-config YAML |
-| `GATEWAY_COUNT` | `4` | Gateway actors fronting the engine |
-| `MAX_CONCURRENT_SESSIONS` | `128` | Max in-flight rollout sessions (runner cap) |
-| `MASK_UNFINISHED_EPISODE` | `False` | Set `True` to zero the loss mask for unfinished episodes |
+| `GATEWAY_COUNT` | `8` | Gateway actors fronting the engine |
+| `MAX_CONCURRENT_SESSIONS` | `256` | Max in-flight rollout sessions (runner cap) |
+| `MASK_UNFINISHED_EPISODE` | `True` | Zero the loss mask for unfinished episodes |
 | `SERVED_MODEL_NAME` | `basename ${MODEL_PATH}` | Model name served at the gateway |
 | `TOOL_PARSER` | `qwen3_coder` | Gateway tool-call parser (must match the model chat template) |
 | `MODEL_PATH` / `TRAIN_DATA` / `VAL_DATA` | `~/models/Qwen3.5-9B` etc. | Model + dataset paths |
 
-`MASK_UNFINISHED_EPISODE=True` is meaningful now: the agent reports `finished`
-explicitly (`exit_status == "Submitted"`), so errored/timed-out episodes can be
-excluded from the loss instead of trained on a zero reward.
+`MASK_UNFINISHED_EPISODE` defaults to `True`: the agent reports `finished`
+explicitly (`exit_status == "Submitted"`), so errored/timed-out episodes are
+excluded from the loss instead of being trained on a zero reward.

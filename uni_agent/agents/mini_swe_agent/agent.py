@@ -3,8 +3,9 @@
 mini-swe-agent is launched *in* the sandbox from a prebuilt tool image (venv at
 ``/opt/mini-swe-agent``) whose ``bin/run_agent.py`` reads a task config from
 **stdin** and writes the result JSON to **stdout**. This agent builds that
-config (with the gateway URL rewritten to the sandbox-internal tunnel), pipes
-it in via base64, and parses the result JSON out of stdout.
+config (the gateway URL is rewritten to the sandbox-internal tunnel by
+``run_task`` when a tunnel is configured), pipes it in via base64, and parses
+the result JSON out of stdout.
 
 Reference: https://github.com/SWE-agent/mini-swe-agent
 """
@@ -19,7 +20,6 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import Field
 
-from ...sandbox.tunnel import DEFAULT_PROXY_PORT, rewrite_gateway_url
 from ..base import Agent, AgentConfig, AgentResult
 from ..registry import register_agent
 
@@ -89,10 +89,6 @@ class MiniSweAgentConfig(AgentConfig):
     step_limit: int = Field(default=100, description="mini-swe-agent max agent steps.")
     run_timeout: float = Field(default=7200.0, description="Wallclock cap (s) on the agent process.")
     conda_env: str = Field(default="testbed", description="Task repo conda env, activated around the launch.")
-    proxy_port: int = Field(
-        default=DEFAULT_PROXY_PORT,
-        description="Sandbox-internal tunnel port (must match the sandbox's proxy_port).",
-    )
     tool_python: str = Field(
         default=TOOL_PYTHON,
         description="Prebuilt tool-image python that runs run_agent.py.",
@@ -120,10 +116,12 @@ class MiniSweAgentAgent(Agent):
             raise ValueError("mini_swe_agent: config.model.base_url is not set (the gateway/vLLM policy endpoint)")
         task = self._extract_task(messages)
 
-        # 1) Build the task config; the gateway URL is rewritten to the sandbox-internal tunnel.
+        # 1) Build the task config. The agent is tunnel-agnostic: when a reverse
+        #    tunnel is configured, run_task has already rewritten model.base_url
+        #    to http://127.0.0.1:<proxy_port>, so it passes through as-is.
         task_config = {
             "task": task,
-            "gateway_url": rewrite_gateway_url(cfg.model.base_url, cfg.proxy_port),
+            "gateway_url": cfg.model.base_url,
             "agent": {"step_limit": cfg.step_limit},
         }
         config_b64 = base64.b64encode(json.dumps(task_config).encode()).decode()

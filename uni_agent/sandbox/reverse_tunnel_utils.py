@@ -10,8 +10,9 @@ translate between the two views of the same endpoint:
 - :func:`extract_upstream` -- extract ``host:port`` to feed the tunnel's
   ``upstream`` so the provider knows where to forward the tunnel.
 
-Both are pure string math (stdlib only) so any caller -- agent, framework glue,
-recipe runner -- can share one implementation instead of re-deriving it.
+Both are pure string math (stdlib only) so any caller -- the framework's
+``run_task`` bridge (and self-contained recipe runners) -- can share one
+implementation instead of re-deriving it.
 """
 
 from __future__ import annotations

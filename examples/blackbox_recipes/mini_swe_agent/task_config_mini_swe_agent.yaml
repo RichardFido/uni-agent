@@ -11,9 +11,11 @@
 #   /opt/mini-swe-agent.
 # - sandbox.sandbox_kwargs.proxy_port is the in-sandbox reverse-tunnel port; the
 #   runtime `upstream` (gateway host:port) is injected by `run_task`, which also
-#   syncs `agent.proxy_port` to this value.
+#   rewrites the agent's model.base_url to http://127.0.0.1:<proxy_port> so the
+#   agent itself stays tunnel-agnostic.
 # - agent.model.base_url/api_key/model_name are injected at runtime from the gateway
-#   session; the mini_swe_agent rewrites base_url to http://127.0.0.1:<proxy_port>.
+#   session; run_task rewrites base_url to the tunnel address when a tunnel is
+#   configured (openyuanrong sandboxes only).
 - name: swe_rebench
   sandbox:
     provider: openyuanrong

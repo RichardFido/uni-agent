@@ -57,7 +57,8 @@ class _RunnerConfig:
     # Hard cap per-session runtime. A runner that neither finishes nor raises
     # (e.g. a remote sandbox hung after OOM without surfacing an error) would
     # otherwise hold a concurrency slot forever and stall the whole batch.
-    session_timeout_seconds: float = 1800.0
+    # Defaults to 7200s so it aligns with the recipe agents' own run_timeout cap.
+    session_timeout_seconds: float = 7200.0
 
     def __post_init__(self) -> None:
         if not self.runner_fqn:
@@ -88,7 +89,7 @@ class _RunnerConfig:
         dispatch_mode = str(runner_cfg.get("dispatch_mode", "inline_async"))
         max_concurrent_sessions = int(runner_cfg.get("max_concurrent_sessions", 0) or 0)
         trajectory_selection = str(runner_cfg.get("trajectory_selection", "all"))
-        session_timeout_seconds = float(runner_cfg.get("session_timeout_seconds", 1800))
+        session_timeout_seconds = float(runner_cfg.get("session_timeout_seconds", 7200))
         try:
             return cls(
                 runner_fqn="" if runner_fqn is None else str(runner_fqn),
