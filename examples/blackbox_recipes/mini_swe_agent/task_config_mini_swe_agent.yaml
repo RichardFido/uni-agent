@@ -16,6 +16,9 @@
 # - agent.model.base_url/api_key/model_name are injected at runtime from the gateway
 #   session; run_task rewrites base_url to the tunnel address when a tunnel is
 #   configured (openyuanrong sandboxes only).
+# - agent.tool_python / agent.run_agent_script are REQUIRED: they name the paths
+#   inside the prebuilt tool image and are bound to its Dockerfile layout
+#   (mounted at /opt/mini-swe-agent); change them together with the tool image.
 - name: swe_rebench
   sandbox:
     provider: openyuanrong
@@ -30,6 +33,8 @@
     step_limit: 100
     run_timeout: 7200
     conda_env: testbed
+    tool_python: /opt/mini-swe-agent/bin/python
+    run_agent_script: /opt/mini-swe-agent/bin/run_agent.py
 
 - name: swe_bench
   sandbox:
@@ -45,3 +50,5 @@
     step_limit: 100
     run_timeout: 7200
     conda_env: testbed
+    tool_python: /opt/mini-swe-agent/bin/python
+    run_agent_script: /opt/mini-swe-agent/bin/run_agent.py

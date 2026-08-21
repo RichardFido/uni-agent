@@ -40,8 +40,14 @@ class _FakeSandbox:
         return ExecResult(exit_code=self._exit_code, stdout=self._stdout, stderr="")
 
 
+_TOOL_PYTHON = "/opt/mini-swe-agent/bin/python"
+_RUN_AGENT_SCRIPT = "/opt/mini-swe-agent/bin/run_agent.py"
+
+
 def _agent(base_url: str = "http://gateway:8000/v1", **config_kwargs) -> MiniSweAgentAgent:
     model = ModelConfig(base_url=base_url, model_name="policy")
+    config_kwargs.setdefault("tool_python", _TOOL_PYTHON)
+    config_kwargs.setdefault("run_agent_script", _RUN_AGENT_SCRIPT)
     return MiniSweAgentAgent(MiniSweAgentConfig(model=model, **config_kwargs))
 
 
@@ -56,7 +62,12 @@ def _decode_task_config(cmd: str) -> dict:
 
 
 def test_build_agent_command_pipes_config_and_invokes_tool_python():
-    cmd = build_agent_command(config_b64="Zm9v", conda_env="testbed")
+    cmd = build_agent_command(
+        config_b64="Zm9v",
+        conda_env="testbed",
+        tool_python=_TOOL_PYTHON,
+        run_agent_script=_RUN_AGENT_SCRIPT,
+    )
     assert cmd.startswith("unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy;")
     assert "printf %s Zm9v | base64 -d |" in cmd
     assert "/opt/mini-swe-agent/bin/python /opt/mini-swe-agent/bin/run_agent.py" in cmd
@@ -100,7 +111,9 @@ def test_parse_agent_result_unparseable_is_error():
 
 
 def test_missing_base_url_raises():
-    agent = MiniSweAgentAgent(MiniSweAgentConfig())
+    agent = MiniSweAgentAgent(
+        MiniSweAgentConfig(tool_python=_TOOL_PYTHON, run_agent_script=_RUN_AGENT_SCRIPT)
+    )
     with pytest.raises(ValueError, match="base_url"):
         asyncio.run(agent.run(sandbox=_FakeSandbox(), messages=[{"role": "user", "content": "fix the bug"}]))
 

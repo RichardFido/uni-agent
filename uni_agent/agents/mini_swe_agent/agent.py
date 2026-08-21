@@ -28,22 +28,22 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-TOOL_PYTHON = "/opt/mini-swe-agent/bin/python"
-RUN_AGENT_SCRIPT = "/opt/mini-swe-agent/bin/run_agent.py"
-
 
 def build_agent_command(
     *,
     config_b64: str,
     conda_env: str = "testbed",
-    tool_python: str = TOOL_PYTHON,
-    run_agent_script: str = RUN_AGENT_SCRIPT,
+    tool_python: str,
+    run_agent_script: str,
 ) -> str:
     """Build the shell command that runs ``run_agent.py`` inside the sandbox.
 
-    The task config is piped via base64-encoded stdin (the protocol ``run_agent.py``
-    expects). The tool python is called through the task's conda env so mini-swe-agent
-    resolves the repo environment inside ``/testbed``.
+    ``tool_python`` / ``run_agent_script`` name the paths inside the prebuilt
+    tool image (they are bound to the tool image's Dockerfile layout, so they are
+    required and declared by the recipe's task config rather than hardcoded
+    here). The task config is piped via base64-encoded stdin (the protocol
+    ``run_agent.py`` expects). The tool python is called through the task's conda
+    env so mini-swe-agent resolves the repo environment inside ``/testbed``.
     """
     conda_prefix = f"/opt/miniconda3/envs/{conda_env}"
     run_agent_env = (
@@ -89,13 +89,15 @@ class MiniSweAgentConfig(AgentConfig):
     step_limit: int = Field(default=100, description="mini-swe-agent max agent steps.")
     run_timeout: float = Field(default=7200.0, description="Wallclock cap (s) on the agent process.")
     conda_env: str = Field(default="testbed", description="Task repo conda env, activated around the launch.")
+    # Tool-image paths are bound to the prebuilt tool image's Dockerfile layout
+    # (mounted at /opt/mini-swe-agent), so they are required here and declared by
+    # the recipe's task config instead of being hardcoded as defaults.
     tool_python: str = Field(
-        default=TOOL_PYTHON,
-        description="Prebuilt tool-image python that runs run_agent.py.",
+        description="Tool-image python that runs run_agent.py (e.g. /opt/mini-swe-agent/bin/python)."
     )
     run_agent_script: str = Field(
-        default=RUN_AGENT_SCRIPT,
-        description="In-tool-image entrypoint script reading config from stdin.",
+        description="In-tool-image entrypoint reading the task config from stdin "
+        "(e.g. /opt/mini-swe-agent/bin/run_agent.py)."
     )
 
 
@@ -126,7 +128,8 @@ class MiniSweAgentAgent(Agent):
         }
         config_b64 = base64.b64encode(json.dumps(task_config).encode()).decode()
 
-        # 2) Pipe it into the prebuilt tool-image python.
+        # 2) Pipe it into the prebuilt tool-image python (paths come from the task
+        #    config -- they are bound to the tool image's Dockerfile layout).
         agent_cmd = build_agent_command(
             config_b64=config_b64,
             conda_env=cfg.conda_env,

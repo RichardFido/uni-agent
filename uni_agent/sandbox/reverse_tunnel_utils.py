@@ -38,6 +38,10 @@ def rewrite_gateway_url(
     """
     parsed = urlparse(gateway_url)
     path = parsed.path.removesuffix("/v1") if strip_v1 else parsed.path
+    # The ``127.0.0.1`` loopback + fixed in-sandbox ``proxy_port`` is the
+    # openyuanrong reverse-tunnel convention (the provider forwards the gateway to
+    # that loopback; ``run_task`` injects the ``upstream``). A provider exposing a
+    # tunnel layout other than a loopback on ``proxy_port`` would generalize this.
     return f"http://127.0.0.1:{proxy_port}{path}"
 
 

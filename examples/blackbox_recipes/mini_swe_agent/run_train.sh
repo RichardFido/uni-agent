@@ -28,12 +28,6 @@ TRAIN_DATA="${TRAIN_DATA:-${HOME}/data/swe_agent/swe_rebench_filtered.parquet}"
 VAL_DATA="${VAL_DATA:-${HOME}/data/swe_agent/swe_bench_verified.parquet}"
 RUNTIME_ENV="${RUNTIME_ENV:-}"
 
-# ── SWE eval ────────────────────────────────────────────────────────────
-# Per-sample eval timeout inside the sandbox for swe_bench/swe_rebench
-# (uni_agent.tasks.{swe_bench,swe_rebench}.reward.compute_reward reads this
-# env; falls back to 300s when unset).
-export SWE_AGENT_EVAL_TIMEOUT="${SWE_AGENT_EVAL_TIMEOUT:-600}"
-
 # ── V1 trainer ───────────────────────────────────────────────────────────
 TRAINER_MODE="${TRAINER_MODE:-separate_async}"
 NUM_WARMUP_BATCHES="${NUM_WARMUP_BATCHES:-1}"

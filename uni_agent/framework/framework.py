@@ -54,11 +54,12 @@ class _RunnerConfig:
     dispatch_mode: str
     max_concurrent_sessions: int
     trajectory_selection: str = "all"
-    # Hard cap per-session runtime. A runner that neither finishes nor raises
-    # (e.g. a remote sandbox hung after OOM without surfacing an error) would
-    # otherwise hold a concurrency slot forever and stall the whole batch.
-    # Defaults to 7200s so it aligns with the recipe agents' own run_timeout cap.
-    session_timeout_seconds: float = 7200.0
+    # Optional hard cap per-session runtime. A runner that neither finishes nor
+    # raises (e.g. a remote sandbox hung after OOM without surfacing an error)
+    # would otherwise hold a concurrency slot forever and stall the whole batch.
+    # Defaults to None (no cap) for backward compatibility; recipes opt in
+    # explicitly (e.g. SESSION_TIMEOUT_SECONDS=7200 in the mini-swe-agent recipe).
+    session_timeout_seconds: float | None = None
 
     def __post_init__(self) -> None:
         if not self.runner_fqn:
@@ -69,7 +70,7 @@ class _RunnerConfig:
             raise ValueError(f"max_concurrent_sessions must be non-negative, got {self.max_concurrent_sessions}")
         if self.trajectory_selection not in {"all", "longest"}:
             raise ValueError(f"Unknown trajectory selection: {self.trajectory_selection}. Expected 'all' or 'longest'")
-        if self.session_timeout_seconds <= 0:
+        if self.session_timeout_seconds is not None and self.session_timeout_seconds <= 0:
             raise ValueError(f"session_timeout_seconds must be positive, got {self.session_timeout_seconds}")
 
     @classmethod
@@ -89,7 +90,8 @@ class _RunnerConfig:
         dispatch_mode = str(runner_cfg.get("dispatch_mode", "inline_async"))
         max_concurrent_sessions = int(runner_cfg.get("max_concurrent_sessions", 0) or 0)
         trajectory_selection = str(runner_cfg.get("trajectory_selection", "all"))
-        session_timeout_seconds = float(runner_cfg.get("session_timeout_seconds", 7200))
+        raw_timeout = runner_cfg.get("session_timeout_seconds")
+        session_timeout_seconds = None if raw_timeout is None else float(raw_timeout)
         try:
             return cls(
                 runner_fqn="" if runner_fqn is None else str(runner_fqn),

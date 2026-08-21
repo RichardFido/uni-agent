@@ -159,6 +159,14 @@ touching the training script:
 | `agent.step_limit` | `100` | mini-swe-agent max agent steps |
 | `agent.run_timeout` | `7200` | Max wall time (s) for the agent process in the sandbox |
 | `agent.conda_env` | `testbed` | Conda env activated inside the sandbox before running the agent |
+| `agent.tool_python` | — (required) | Tool-image python; bound to the Dockerfile layout (`/opt/mini-swe-agent/bin/python`) |
+| `agent.run_agent_script` | — (required) | Tool-image entrypoint; bound to the Dockerfile layout (`/opt/mini-swe-agent/bin/run_agent.py`) |
+| `eval_timeout` | `600` | Task-level per-sample reward-eval timeout (s) inside the sandbox (swe_bench / swe_rebench) |
+
+> `agent.tool_python` / `agent.run_agent_script` are **required**: they name paths
+> inside the prebuilt tool image and are tied to its Dockerfile layout. If you
+> build a custom tool image, set them (and the mount in `sandbox_kwargs.mounts`)
+> together.
 
 Runtime-managed (do **not** set in the YAML): `sandbox.sandbox_kwargs.upstream`
 (gateway `host:port`, derived from the session) and `agent.model.base_url` /
@@ -190,12 +198,11 @@ rewritten through the tunnel when `proxy_port` is set).
 | `TASK_CONFIG` | `examples/blackbox_recipes/mini_swe_agent/task_config_mini_swe_agent.yaml` | Task-config YAML |
 | `GATEWAY_COUNT` | `8` | Gateway actors fronting the engine |
 | `MAX_CONCURRENT_SESSIONS` | `256` | Max in-flight rollout sessions (runner cap) |
-| `SESSION_TIMEOUT_SECONDS` | `7200` | Framework cap per session; guards against runners that hang without raising |
+| `SESSION_TIMEOUT_SECONDS` | `7200` (recipe) / none (framework) | Framework cap per session; guards against runners that hang without raising |
 | `NUM_AGENT_WORKERS` | `8` | Ray workers executing the runner |
 | `SERVED_MODEL_NAME` | `basename ${MODEL_PATH}` | Model name served at the gateway |
 | `TOOL_PARSER` | `qwen3_coder` | Gateway tool-call parser; must match the model chat template |
 | `MASK_UNFINISHED_EPISODE` | `True` | Zero the loss mask for unfinished episodes |
-| `SWE_AGENT_EVAL_TIMEOUT` | `600` | Per-sample reward-eval timeout (s) inside the sandbox |
 
 **Model / data / trainer (selected)**
 
@@ -220,10 +227,10 @@ rewritten through the tunnel when `proxy_port` is set).
 - `agent.run_timeout` caps the in-sandbox agent process (per sample).
 - `SESSION_TIMEOUT_SECONDS` caps the whole session at the framework level (a
   safety net for runners that hang without raising, e.g. an OOM-killed remote
-  sandbox). Keep it ≥ `run_timeout` so legitimate long runs are not cut short —
-  the recipe defaults both to `7200`.
-- `SWE_AGENT_EVAL_TIMEOUT` caps only the reward evaluation (after the agent
-  finishes).
+  sandbox). It defaults to no cap; the recipe sets it to `7200`, aligned with
+  `run_timeout`, so legitimate long runs are not cut short.
+- Task-config `eval_timeout` caps only the reward evaluation (after the agent
+  finishes; default `600`).
 
 ## Result semantics & reward masking
 
