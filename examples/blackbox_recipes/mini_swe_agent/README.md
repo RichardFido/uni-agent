@@ -9,52 +9,33 @@ code required.
 
 ## How it works
 
-```text
-verl.main_ppo
-  └─ AgentFrameworkRolloutAdapter ── GatewayManager (session.base_url = policy gateway)
-       └─ OpenAICompatibleAgentFramework ── run_task (uni_agent.framework.task_runner)
-            |-- TaskConfigResolver: task_config YAML + sample row + runtime model
-            |     `-- sandbox: provider=openyuanrong, image=<canonical>, mounts=[tool image -> /opt/mini-swe-agent]
-            |     `-- agent:   mini_swe_agent (step_limit / run_timeout / conda_env)
-            |
-            |-- [tunnel injection, openyuanrong only] sandbox.sandbox_kwargs.upstream = gateway host:port
-            |     `-- agent.model.base_url rewritten to http://127.0.0.1:<proxy_port><path>
-            |
-            |-- OpenyuanrongSandbox.start()  (mounts + upstream/proxy_port reverse tunnel)
-            |-- MiniSweAgentAgent.run()
-            |     `-- exec_shell("printf %s <b64> | base64 -d | env <conda> /opt/mini-swe-agent/bin/python /opt/mini-swe-agent/bin/run_agent.py")
-            |           stdin  <- task config JSON {task, gateway_url, agent:{step_limit}}
-            |           stdout -> result JSON      {exit_status, submission, model_stats}
-            `-- compute_reward(metadata, sandbox) -> reward_info POST via report_reward=True
+```mermaid
+flowchart TB
+    A[verl.trainer.main_ppo] --> B[AgentFrameworkRolloutAdapter<br/>GatewayManager: session per sample]
+    B --> C["run_task<br/>(uni_agent.framework.task_runner)"]
+    C --> D["TaskConfigResolver<br/>task YAML + sample row + gateway session"]
+    D --> E{"tunnel?<br/>(proxy_port set)"}
+    E -- yes, openyuanrong --> F["inject upstream + rewrite base_url<br/>to http://127.0.0.1:proxy_port"]
+    E -- no (docker/local) --> G["keep gateway base_url<br/>(sandbox reaches it directly)"]
+    F --> H["OpenyuanrongSandbox.start()<br/>SWE image + tool image mounted at /opt/mini-swe-agent"]
+    G --> I["DockerSandbox.start()<br/>same layout, no tunnel"]
+    H --> J["MiniSweAgentAgent.run()<br/>base64 task config -> stdin of run_agent.py"]
+    I --> J
+    J --> K["in-sandbox mini-swe-agent<br/>executes in /testbed, LLM calls via gateway"]
+    K --> L["result JSON on stdout<br/>finished = exit_status == Submitted"]
+    L --> M["compute_reward in the same sandbox<br/>POST reward_info to the session"]
 ```
 
 Per sample, `uni_agent.framework.task_runner.run_task`:
 
-1. **Resolves the task config** — the per-task-name defaults from
-   `task_config_mini_swe_agent.yaml`, the sample row (canonical sandbox image,
-   prompt, metadata), and the runtime model binding (from the gateway session).
-2. **Injects the reverse tunnel** — when `sandbox.sandbox_kwargs.proxy_port` is set,
-   `run_task` fills `sandbox_kwargs.upstream` (the gateway `host:port`) and rewrites
-   `agent.model.base_url` to `http://127.0.0.1:<proxy_port><path>`, so the agent
-   itself stays tunnel-agnostic. A tunnel configured on any non-`openyuanrong`
-   sandbox provider is rejected loudly.
-3. **Runs the agent in the sandbox** — the `MiniSweAgentAgent` builds the task
-   config, pipes it as base64 via stdin into the tool-image python, and parses the
-   result JSON out of stdout (litellm noise tolerated). The sandboxed agent solves
-   the issue by executing commands in `/testbed` and calling the policy through
-   `gateway_url`.
-4. **Scores the reward** in the same sandbox with the task's reward function and
-   POSTs it back to the framework (`report_reward=True`).
-
-### The in-sandbox contract (`run_agent.py`)
-
-| Direction | Payload |
-|---|---|
-| stdin | `{task: str, gateway_url: str, agent: {step_limit: int}}` (base64-encoded by the agent) |
-| stdout | `{exit_status: str, submission: str, model_stats: {instance_cost, api_calls}}` — the last JSON line wins |
-
-`exit_status == "Submitted"` is the agent's explicit "finished" signal; anything
-else (error / timeout / exceeded steps) is treated as unfinished.
+1. **Resolve** the task config (per-task YAML defaults + sample row + gateway session binding).
+2. **Connect** to the gateway: openyuanrong sandboxes go through the reverse tunnel
+   (`upstream` injected, `base_url` rewritten to `127.0.0.1:<proxy_port>`); other
+   providers (docker/local) call the gateway address directly.
+3. **Run** mini-swe-agent inside the sandbox: the task config is piped (base64) into the
+   tool-image python, which runs the real mini-swe-agent against `/testbed` and the policy.
+4. **Score** in the same sandbox and POST the reward back (`report_reward=True`); only
+   `exit_status == "Submitted"` counts as finished, so unfinished episodes can be masked.
 
 ## Prerequisites
 
