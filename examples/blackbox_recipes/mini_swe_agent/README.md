@@ -237,8 +237,9 @@ toward a zero reward.
 ## Design notes
 
 - `uni_agent/agents/mini_swe_agent/agent.py` is **tunnel-agnostic**: the reverse
-  tunnel is owned by the framework glue (`uni_agent/framework/task_runner.py`) and
-  the URL math lives in `uni_agent/sandbox/reverse_tunnel_utils.py`.
+  tunnel (including the gateway-URL → tunnel-address math) is owned by the
+  framework glue (`uni_agent/framework/task_runner.py`); the sandbox provider
+  only receives the resolved `upstream` / `proxy_port`.
 - The stdin/stdout protocol and the tool image are reused unchanged from the
   original mini-swe-agent runner; only the host-side orchestration moved into
   `uni_agent` first-class APIs.

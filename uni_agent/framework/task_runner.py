@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
-from uni_agent.sandbox.reverse_tunnel_utils import extract_upstream, rewrite_gateway_url
 from uni_agent.tasks import TaskConfigResolver, TaskResult, get_task
 from uni_agent.tasks.config import _deep_merge
 
@@ -14,6 +14,29 @@ if TYPE_CHECKING:
     from uni_agent.gateway.session import SessionHandle
 
 logger = logging.getLogger(__name__)
+
+
+def _rewrite_gateway_url(gateway_url: str, proxy_port: int) -> str:
+    """Rewrite a gateway URL to the sandbox-internal tunnel (``127.0.0.1:<proxy_port>``).
+
+    Replaces host:port with ``127.0.0.1:<proxy_port>`` and keeps the path, so an
+    in-sandbox endpoint reaches the gateway through the reverse tunnel. Example:
+    ``http://gateway.example:40169/sessions/abc/v1`` ->
+    ``http://127.0.0.1:38197/sessions/abc/v1``.
+    """
+    return f"http://127.0.0.1:{proxy_port}{urlparse(gateway_url).path}"
+
+
+def _extract_upstream(gateway_url: str) -> str | None:
+    """Extract ``host:port`` from a gateway URL (the tunnel's ``upstream``).
+
+    Returns ``None`` when the URL carries no host or port, so callers can fail
+    loudly instead of forwarding a ``None:None`` upstream.
+    """
+    parsed = urlparse(gateway_url)
+    if not parsed.hostname or not parsed.port:
+        return None
+    return f"{parsed.hostname}:{parsed.port}"
 
 
 def _inject_gateway_tunnel(task: dict[str, Any], base_url: str) -> dict[str, Any]:
@@ -38,7 +61,7 @@ def _inject_gateway_tunnel(task: dict[str, Any], base_url: str) -> dict[str, Any
             f"supported only on 'openyuanrong' sandboxes, got provider={provider!r}; "
             "switch the sandbox provider or drop proxy_port"
         )
-    upstream = extract_upstream(base_url)
+    upstream = _extract_upstream(base_url)
     if upstream is None:
         raise ValueError(f"cannot derive gateway tunnel upstream from base_url={base_url!r}")
     proxy_port = task["sandbox"]["sandbox_kwargs"]["proxy_port"]
@@ -46,7 +69,7 @@ def _inject_gateway_tunnel(task: dict[str, Any], base_url: str) -> dict[str, Any
         task,
         {
             "sandbox": {"sandbox_kwargs": {"upstream": upstream}},
-            "agent": {"model": {"base_url": rewrite_gateway_url(base_url, proxy_port)}},
+            "agent": {"model": {"base_url": _rewrite_gateway_url(base_url, proxy_port)}},
         },
     )
 

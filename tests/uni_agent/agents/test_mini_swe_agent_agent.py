@@ -111,9 +111,7 @@ def test_parse_agent_result_unparseable_is_error():
 
 
 def test_missing_base_url_raises():
-    agent = MiniSweAgentAgent(
-        MiniSweAgentConfig(tool_python=_TOOL_PYTHON, run_agent_script=_RUN_AGENT_SCRIPT)
-    )
+    agent = MiniSweAgentAgent(MiniSweAgentConfig(tool_python=_TOOL_PYTHON, run_agent_script=_RUN_AGENT_SCRIPT))
     with pytest.raises(ValueError, match="base_url"):
         asyncio.run(agent.run(sandbox=_FakeSandbox(), messages=[{"role": "user", "content": "fix the bug"}]))
 

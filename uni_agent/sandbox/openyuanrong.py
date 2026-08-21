@@ -11,7 +11,6 @@ import logging
 import os
 import shlex
 import sys
-import time
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -28,9 +27,7 @@ _sdk_initialized = False
 
 #: Registry host that mirrors the canonical open-source SWE images for the
 #: openyuanrong sandbox (env-overridable).
-_OPENYUANRONG_REGISTRY = os.getenv(
-    "OPENYUANRONG_IMAGE_REGISTRY", "swr.cn-east-3.myhuaweicloud.com/openyuanrong"
-)
+_OPENYUANRONG_REGISTRY = os.getenv("OPENYUANRONG_IMAGE_REGISTRY", "swr.cn-east-3.myhuaweicloud.com/openyuanrong")
 
 
 def _to_openyuanrong_image(image: str) -> str:
@@ -165,7 +162,9 @@ class OpenyuanrongSandbox(Sandbox):
 
     @classmethod
     def from_config(cls, config: SandboxConfig) -> OpenyuanrongSandbox:
-        return cls(image=_to_openyuanrong_image(config.image), runtime_timeout=config.runtime_timeout, **config.sandbox_kwargs)
+        return cls(
+            image=_to_openyuanrong_image(config.image), runtime_timeout=config.runtime_timeout, **config.sandbox_kwargs
+        )
 
     # ----- public: control plane -----
     async def start(self) -> None:

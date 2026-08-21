@@ -1,9 +1,32 @@
 import pytest
 
 from uni_agent.framework import task_runner
-from uni_agent.framework.task_runner import _inject_gateway_tunnel, _reward_info_from_result
+from uni_agent.framework.task_runner import (
+    _extract_upstream,
+    _inject_gateway_tunnel,
+    _reward_info_from_result,
+    _rewrite_gateway_url,
+)
 from uni_agent.gateway.session import SessionHandle
 from uni_agent.tasks import TaskConfig, TaskResult
+
+
+def test_rewrite_gateway_url_replaces_host_with_tunnel_port():
+    assert _rewrite_gateway_url("http://gateway.example:40169/sessions/abc/v1", 38197) == (
+        "http://127.0.0.1:38197/sessions/abc/v1"
+    )
+
+
+def test_rewrite_gateway_url_custom_proxy_port():
+    assert _rewrite_gateway_url("http://gateway:8000/v1", 4242) == "http://127.0.0.1:4242/v1"
+
+
+def test_extract_upstream_returns_host_port():
+    assert _extract_upstream("http://gateway.example:40169/sessions/abc/v1") == "gateway.example:40169"
+
+
+def test_extract_upstream_none_without_port():
+    assert _extract_upstream("http://gateway/v1") is None
 
 
 def test_inject_gateway_tunnel_rewrites_upstream_and_base_url():
