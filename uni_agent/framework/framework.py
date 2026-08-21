@@ -54,11 +54,6 @@ class _RunnerConfig:
     dispatch_mode: str
     max_concurrent_sessions: int
     trajectory_selection: str = "all"
-    # Optional hard cap per-session runtime. A runner that neither finishes nor
-    # raises (e.g. a remote sandbox hung after OOM without surfacing an error)
-    # would otherwise hold a concurrency slot forever and stall the whole batch.
-    # Defaults to None (no cap) for backward compatibility; recipes opt in
-    # explicitly (e.g. SESSION_TIMEOUT_SECONDS=7200 in the mini-swe-agent recipe).
     session_timeout_seconds: float | None = None
 
     def __post_init__(self) -> None:
@@ -303,6 +298,11 @@ class OpenAICompatibleAgentFramework(AgentFramework):
     trajectories in the session (matching ``AgentLoopWorkerTQ._agent_loop_postprocess``).
     The framework then writes them to the TransferQueue schema consumed by sync training.
     """
+
+    #: Grace period for a timed-out runner Ray task to observe a graceful
+    #: ray.cancel (letting its sandbox context manager tear down) before the
+    #: framework escalates to a force-kill.
+    _RUNNER_CANCEL_GRACE_SECONDS = 30.0
 
     def __init__(
         self,
@@ -707,10 +707,19 @@ class OpenAICompatibleAgentFramework(AgentFramework):
                     # remote sandbox that OOM-killed the kernel and never returns).
                     # Without this cap a single stuck session would hold its
                     # concurrency slot forever and stall the whole training batch.
-                    await asyncio.wait_for(
-                        object_ref,
-                        timeout=runner_config.session_timeout_seconds,
-                    )
+                    # wait_for only bounds the parent's await; the Ray task must
+                    # be cancelled explicitly or it (and its sandbox) would keep
+                    # running. Graceful cancel first so the runner's asyncio.run
+                    # unwinds and its sandbox context manager tears down cleanly;
+                    # force-kill only if it ignores the cancel.
+                    try:
+                        await asyncio.wait_for(
+                            object_ref,
+                            timeout=runner_config.session_timeout_seconds,
+                        )
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                        await self._cancel_runner_task(object_ref, session_id)
+                        raise
                 else:
                     runner = self._inline_runners[runner_name]
                     await runner(
@@ -759,6 +768,39 @@ class OpenAICompatibleAgentFramework(AgentFramework):
             if run_dir is not None:
                 await asyncio.to_thread(self._dump_trajectories, run_dir, session_id, result_trajectories)
             return result_trajectories, sample_fields
+
+    async def _cancel_runner_task(self, object_ref, session_id: str) -> None:
+        """Cancel a dispatched runner Ray task after its session timed out.
+
+        Graceful cancel (``force=False``) lets the worker's ``asyncio.run`` raise
+        ``CancelledError`` and unwind, so runner-side cleanup (e.g. the task's
+        sandbox context manager) runs. If the task is still pending after a short
+        grace period, force-kill it: correctness of the batch (freeing the worker
+        and its resources) beats the risk of skipping graceful teardown.
+        """
+        try:
+            ray.cancel(object_ref)
+        except Exception:
+            logger.exception("session %s: ray.cancel failed for runner task", session_id)
+            return
+        try:
+            await asyncio.wait_for(object_ref, timeout=self._RUNNER_CANCEL_GRACE_SECONDS)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "session %s: runner task ignored graceful cancel after %ss; force-killing",
+                session_id,
+                self._RUNNER_CANCEL_GRACE_SECONDS,
+            )
+            try:
+                ray.cancel(object_ref, force=True)
+            except Exception:
+                logger.exception("session %s: force ray.cancel failed", session_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Task terminated while being cancelled (e.g. TaskCancelledError);
+            # that is the expected outcome.
+            pass
 
     def _log_trajectory_summary(self, session_id: str, trajectories: list[Trajectory]) -> None:
         """Log a per-session trajectory summary -- the info the task layer can't emit,

@@ -132,11 +132,11 @@ RUNNER_ARGS=(
 
 # ── OpenYuanrong (remote sandbox) ───────────────────────────────────────
 # OPENYUANRONG_SERVER_ADDRESS / OPENYUANRONG_TOKEN are required by the provider.
-# OPENYUANRONG_IMAGE_REGISTRY optionally overrides the canonical->registry prefix.
+# Canonical SWE image refs are mapped to the sandbox registry via `image_map`
+# in the Task Config (task_config_mini_swe_agent.yaml), not here.
 OPENYUANRONG_SERVER_ADDRESS="${OPENYUANRONG_SERVER_ADDRESS:-}"
 OPENYUANRONG_TOKEN="${OPENYUANRONG_TOKEN:-}"
 OPENYUANRONG_TUNNEL_SSL_VERIFY="${OPENYUANRONG_TUNNEL_SSL_VERIFY:-0}"
-OPENYUANRONG_IMAGE_REGISTRY="${OPENYUANRONG_IMAGE_REGISTRY:-}"
 SANDBOX_NAME_PREFIX="${SANDBOX_NAME_PREFIX:-mini-swe-}"
 
 # ── Logging & checkpointing ──────────────────────────────────────────────
@@ -159,7 +159,6 @@ RL_INSIGHT_SERVER_URL="${RL_INSIGHT_SERVER_URL:-}"
 export OPENYUANRONG_SERVER_ADDRESS
 export OPENYUANRONG_TOKEN
 export OPENYUANRONG_TUNNEL_SSL_VERIFY
-export OPENYUANRONG_IMAGE_REGISTRY
 export SANDBOX_NAME_PREFIX
 export VERL_LOGGING_LEVEL="${VERL_LOGGING_LEVEL:-INFO}"
 export RAY_DEDUP_LOGS="${RAY_DEDUP_LOGS:-0}"
@@ -215,11 +214,13 @@ fi
 # hydra keeps them as str, not int -- Ray requires Dict[str,str]). These keys
 # are declared statically:
 #   TRANSFER_QUEUE_ENABLE / NCCL_P2P_DISABLE / NCCL_SHM_DISABLE /
-#   SANDBOX_NAME_PREFIX / RL_INSIGHT_SERVER_URL
+#   SANDBOX_NAME_PREFIX / RL_INSIGHT_SERVER_URL / OPENYUANRONG_*
 #
-# Everything else (OPENYUANRONG_*, RAY_DEDUP_LOGS, PYTHONUNBUFFERED,
-# VERL_LOGGING_LEVEL, ...) is expected to be inherited by the ray job from the
-# driver shell env (exported above).
+# The OPENYUANRONG_* credentials MUST ride the runtime_env: `ray job submit`
+# launches the driver via the cluster-side Job Agent, which does NOT inherit
+# the submitting shell's environment, so a plain `export` would never reach
+# the rollout workers. Empty values are skipped (the provider has defaults).
+# Pass secrets via a Ray secret provider in production when available.
 #
 # PYTHONPATH is omitted here: Ray injects it from the job working_dir; the actor
 # PYTHONPATH is set by verl's get_ppo_ray_runtime_env.
@@ -228,10 +229,15 @@ RAY_INIT_ENV_ARGS=(
     "+ray_kwargs.ray_init.runtime_env.env_vars.NCCL_SHM_DISABLE=\"1\""
     "+ray_kwargs.ray_init.runtime_env.env_vars.SANDBOX_NAME_PREFIX=\"${SANDBOX_NAME_PREFIX}\""
     "+ray_kwargs.ray_init.runtime_env.env_vars.RL_INSIGHT_SERVER_URL=\"${RL_INSIGHT_SERVER_URL}\""
-    # TRANSFER_QUEUE_ENABLE is a REQUIRED key here: verl main_ppo overwrites it to
-    # "1" itself when transfer_queue.enable=True. It must already exist in the
-    # (struct) env_vars dict or verl's assignment crashes ("Key ... is not in
-    # struct").
+    "+ray_kwargs.ray_init.runtime_env.env_vars.OPENYUANRONG_SERVER_ADDRESS=\"${OPENYUANRONG_SERVER_ADDRESS}\""
+    "+ray_kwargs.ray_init.runtime_env.env_vars.OPENYUANRONG_TOKEN=\"${OPENYUANRONG_TOKEN}\""
+    "+ray_kwargs.ray_init.runtime_env.env_vars.OPENYUANRONG_TUNNEL_SSL_VERIFY=\"${OPENYUANRONG_TUNNEL_SSL_VERIFY}\""
+)
+# TRANSFER_QUEUE_ENABLE is a REQUIRED key here: verl main_ppo overwrites it to
+# "1" itself when transfer_queue.enable=True. It must already exist in the
+# (struct) env_vars dict or verl's assignment crashes ("Key ... is not in
+# struct").
+RAY_INIT_ENV_ARGS+=(
     "+ray_kwargs.ray_init.runtime_env.env_vars.TRANSFER_QUEUE_ENABLE=\"\""
 )
 

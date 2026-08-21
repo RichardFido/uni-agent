@@ -14,13 +14,9 @@ flowchart TB
     A[verl.trainer.main_ppo] --> B[AgentFrameworkRolloutAdapter<br/>GatewayManager: session per sample]
     B --> C["run_task<br/>(uni_agent.framework.task_runner)"]
     C --> D["TaskConfigResolver<br/>task YAML + sample row + gateway session"]
-    D --> E{"tunnel?<br/>(proxy_port set)"}
-    E -- yes, openyuanrong --> F["inject upstream + rewrite base_url<br/>to http://127.0.0.1:proxy_port"]
-    E -- no (docker/local) --> G["keep gateway base_url<br/>(sandbox reaches it directly)"]
+    D --> F["redirect gateway URL<br/>to http://127.0.0.1:proxy_port"]
     F --> H["OpenyuanrongSandbox.start()<br/>SWE image + tool image mounted at /opt/mini-swe-agent"]
-    G --> I["DockerSandbox.start()<br/>same layout, no tunnel"]
     H --> J["MiniSweAgentAgent.run()<br/>base64 task config -> stdin of run_agent.py"]
-    I --> J
     J --> K["in-sandbox mini-swe-agent<br/>executes in /testbed, LLM calls via gateway"]
     K --> L["result JSON on stdout<br/>finished = exit_status == Submitted"]
     L --> M["compute_reward in the same sandbox<br/>POST reward_info to the session"]
@@ -29,13 +25,22 @@ flowchart TB
 Per sample, `uni_agent.framework.task_runner.run_task`:
 
 1. **Resolve** the task config (per-task YAML defaults + sample row + gateway session binding).
-2. **Connect** to the gateway: openyuanrong sandboxes go through the reverse tunnel
-   (`upstream` injected, `base_url` rewritten to `127.0.0.1:<proxy_port>`); other
-   providers (docker/local) call the gateway address directly.
+2. **Connect** to the gateway: the gateway URL is redirected to the sandbox-internal
+   `127.0.0.1:<proxy_port>` (reverse tunnel), so the sandbox reaches the policy
+   through the tunnel without needing to reach the training cluster directly.
 3. **Run** mini-swe-agent inside the sandbox: the task config is piped (base64) into the
    tool-image python, which runs the real mini-swe-agent against `/testbed` and the policy.
-4. **Score** in the same sandbox and POST the reward back (`report_reward=True`); only
-   `exit_status == "Submitted"` counts as finished, so unfinished episodes can be masked.
+4. **Score** in the same sandbox and POST the reward back (`report_reward=True`); an
+   episode counts as finished only when the agent actually submits a patch
+   (`exit_status == "Submitted"`), so unfinished ones are masked from the loss.
+
+### Sandbox provider
+
+This recipe runs on the **openyuanrong** sandbox — the only provider with
+reverse-tunnel support. The tunnel carries the sandbox → policy direction, so the
+sandbox cluster and the training cluster do **not** need to reach each other: only
+the training side must access the sandbox service (API + image pull), which is the
+typical setup for NPU clusters behind NAT.
 
 ## Prerequisites
 
@@ -92,9 +97,9 @@ python -m uni_agent.tasks.swe_bench.preprocess    --local-save-dir ~/data/uni_ag
 ```
 
 The row's `sandbox.image` is a **canonical** ref (e.g. `swebench/sweb.eval.x86_64.astropy__astropy-12907`).
-The openyuanrong provider prefixes it with the registry host at sandbox-creation
-time (override via `OPENYUANRONG_IMAGE_REGISTRY`); refs that are already full
-addresses (e.g. the tool image) pass through unchanged.
+The recipe's Task Config maps it to the openyuanrong registry at run time via
+`sandbox.image_map` (edit the `to:` targets there to use a different registry);
+refs that are already full addresses (e.g. the tool image) pass through unchanged.
 
 ### 3. Launch training
 
@@ -134,6 +139,7 @@ touching the training script:
 
 | Key | Default | Description |
 |-----|---------|-------------|
+| `sandbox.image_map` | `swebench/**:latest` → `swr.cn-east-3.myhuaweicloud.com/openyuanrong/**:latest` (and `swerebench/**`) | Maps canonical SWE image refs to the sandbox registry at run time |
 | `sandbox.sandbox_kwargs.mounts[].image_url` | `swr.cn-east-3.myhuaweicloud.com/openyuanrong/mini-swe-agent-tool:latest` | Sidecar tool image mounted at `/opt/mini-swe-agent` |
 | `sandbox.sandbox_kwargs.proxy_port` | `38197` | Sandbox-internal reverse-tunnel port — **single source of truth** |
 | `sandbox.sandbox_kwargs.cpu/memory/…` | provider defaults | Sandbox resource sizes (pass through to the openyuanrong SDK) |
@@ -152,7 +158,7 @@ touching the training script:
 Runtime-managed (do **not** set in the YAML): `sandbox.sandbox_kwargs.upstream`
 (gateway `host:port`, derived from the session) and `agent.model.base_url` /
 `api_key` / `model_name` (injected from the gateway session; `base_url` is
-rewritten through the tunnel when `proxy_port` is set).
+rewritten through the reverse tunnel when `proxy_port` is set).
 
 ### Training script env vars
 
@@ -164,12 +170,11 @@ rewritten through the tunnel when `proxy_port` is set).
 | `MODEL_PATH` | Policy model path (default `~/models/Qwen3.5-9B`) |
 | `TRAIN_DATA` / `VAL_DATA` | Preprocessed parquet paths (defaults under `~/data/swe_agent/`) |
 
-**Sandbox / tunnel**
+**Sandbox / reverse tunnel**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENYUANRONG_IMAGE_REGISTRY` | `swr.cn-east-3.myhuaweicloud.com/openyuanrong` | Prefix applied to canonical SWE image refs |
-| `OPENYUANRONG_TUNNEL_SSL_VERIFY` | `0` | TLS verification for the sandbox tunnel |
+| `OPENYUANRONG_TUNNEL_SSL_VERIFY` | `0` | TLS verification for the sandbox reverse tunnel |
 | `SANDBOX_NAME_PREFIX` | `mini-swe-` | Prefix for created sandbox names |
 
 **Rollout / framework runner**
@@ -179,7 +184,7 @@ rewritten through the tunnel when `proxy_port` is set).
 | `TASK_CONFIG` | `examples/blackbox_recipes/mini_swe_agent/task_config_mini_swe_agent.yaml` | Task-config YAML |
 | `GATEWAY_COUNT` | `8` | Gateway actors fronting the engine |
 | `MAX_CONCURRENT_SESSIONS` | `256` | Max in-flight rollout sessions (runner cap) |
-| `SESSION_TIMEOUT_SECONDS` | `7200` (recipe) / none (framework) | Framework cap per session; guards against runners that hang without raising |
+| `SESSION_TIMEOUT_SECONDS` | `1800` (recipe) / none (framework) | Framework cap per session; guards against runners that hang without raising |
 | `NUM_AGENT_WORKERS` | `8` | Ray workers executing the runner |
 | `SERVED_MODEL_NAME` | `basename ${MODEL_PATH}` | Model name served at the gateway |
 | `TOOL_PARSER` | `qwen3_coder` | Gateway tool-call parser; must match the model chat template |
@@ -208,8 +213,10 @@ rewritten through the tunnel when `proxy_port` is set).
 - `agent.run_timeout` caps the in-sandbox agent process (per sample).
 - `SESSION_TIMEOUT_SECONDS` caps the whole session at the framework level (a
   safety net for runners that hang without raising, e.g. an OOM-killed remote
-  sandbox). It defaults to no cap; the recipe sets it to `7200`, aligned with
-  `run_timeout`, so legitimate long runs are not cut short.
+  sandbox). It defaults to no cap; the recipe sets it to `1800` — sessions
+  exceeding it are cancelled (the Ray task is `ray.cancel`-ed, then the session
+  aborted) and the sample is dropped from the batch without stopping training.
+  Raise it when legitimate episodes regularly run longer.
 - Task-config `eval_timeout` caps only the reward evaluation (after the agent
   finishes; default `600`).
 
@@ -225,11 +232,11 @@ toward a zero reward.
 | Symptom | Likely cause / fix |
 |---|---|
 | `OPENYUANRONG_SERVER_ADDRESS and OPENYUANRONG_TOKEN ... must be set` | Credentials missing; export both before `run_train.sh` |
-| Sandbox cannot pull the SWE image | The canonical ref maps to `OPENYUANRONG_IMAGE_REGISTRY/<ref>`; point the env var (or the mapping in `uni_agent/sandbox/openyuanrong.py`) at the registry the sandbox service can reach |
+| Sandbox cannot pull the SWE image | The canonical ref is mapped by `sandbox.image_map` in the task YAML; edit the `to:` targets (or add a rule) so it points at the registry the sandbox service can reach |
 | Sandbox cannot pull the **tool** image | `mounts[].image_url` in the task YAML must be a full, pullable address — push it with `build_tool.sh --registry <registry>` |
 | Agent never reaches the policy / requests fail inside the sandbox | Reverse tunnel misconfigured: `proxy_port` must be set in `sandbox_kwargs` (single source of truth) and the provider must be `openyuanrong`; `run_task` injects `upstream` + rewrites `base_url` |
 | `ValueError: ... supported only on 'openyuanrong' ...` | `proxy_port` configured on a non-Yuanrong sandbox provider — switch the provider or drop `proxy_port` |
-| Sessions aborted at a round number | `SESSION_TIMEOUT_SECONDS` too low — raise it (must be ≥ `agent.run_timeout`) |
+| Sessions aborted at a round number | `SESSION_TIMEOUT_SECONDS` too low for your episode lengths (recipe default `1800`) — raise it when legitimate runs are being cut short |
 | Every episode "unfinished" / loss mask all zeros | Agent errored before submitting: check `exit_status` in the task logs under `AGENT_LOG_DIR`; or set `MASK_UNFINISHED_EPISODE=False` while debugging |
 | Gateway tool-call parsing errors | `TOOL_PARSER` (`qwen3_coder`) must match the model's chat template |
 | `config.model.base_url is not set` | Agent run outside the framework with no runtime model binding — only happens on standalone use; keep `base_url` in the config then |
