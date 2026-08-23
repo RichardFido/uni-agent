@@ -12,14 +12,14 @@
 # model binding, and returns the reward via report_reward=True.
 #
 # Usage:
-#   bash examples/blackbox_recipes/mini_swe_agent/run_train.sh
+#   bash examples/mini_swe_agent/run_train.sh
 #
 # All configurable via environment variables (see defaults below).
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="${REPO_ROOT:-$(cd "${SCRIPT_DIR}/../../.." && pwd)}"
+REPO_ROOT="${REPO_ROOT:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
 cd "${REPO_ROOT}"
 
 # ── Model & data ─────────────────────────────────────────────────────────
@@ -100,7 +100,7 @@ PPO_MICRO_BATCH_SIZE_PER_GPU="${PPO_MICRO_BATCH_SIZE_PER_GPU:-1}"
 # ── Agent-framework rollout (unified run_task bridge) ────────────────────
 # mini-swe-agent knobs (step_limit/run_timeout/conda_env) and the tool-image
 # mount are configured in TASK_CONFIG (task_config_mini_swe_agent.yaml).
-TASK_CONFIG="${TASK_CONFIG:-examples/blackbox_recipes/mini_swe_agent/task_config_mini_swe_agent.yaml}"
+TASK_CONFIG="${TASK_CONFIG:-examples/mini_swe_agent/task_config_mini_swe_agent.yaml}"
 TOOL_PARSER="${TOOL_PARSER:-qwen3_coder}"   # gateway tool-call parser; must match the model chat template
 GATEWAY_COUNT="${GATEWAY_COUNT:-8}"
 MAX_CONCURRENT_SESSIONS="${MAX_CONCURRENT_SESSIONS:-256}"

@@ -8,9 +8,9 @@
 # not need Python for the sidecar tool runtime.
 #
 # Usage:
-#   bash examples/blackbox_recipes/mini_swe_agent/build_tool.sh
-#   bash examples/blackbox_recipes/mini_swe_agent/build_tool.sh --pip-index https://pypi.tuna.tsinghua.edu.cn/simple/
-#   bash examples/blackbox_recipes/mini_swe_agent/build_tool.sh --registry swr.cn-east-3.myhuaweicloud.com/openyuanrong
+#   bash examples/mini_swe_agent/build_tool.sh
+#   bash examples/mini_swe_agent/build_tool.sh --pip-index https://pypi.tuna.tsinghua.edu.cn/simple/
+#   bash examples/mini_swe_agent/build_tool.sh --registry swr.cn-east-3.myhuaweicloud.com/openyuanrong
 #
 set -euo pipefail
 

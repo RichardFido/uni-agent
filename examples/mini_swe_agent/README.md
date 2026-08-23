@@ -70,14 +70,14 @@ with pinned `mini-swe-agent` + `litellm` + `run_agent.py`, packaged into a minim
 
 ```bash
 # Local build (default PyPI source).
-bash examples/blackbox_recipes/mini_swe_agent/build_tool.sh
+bash examples/mini_swe_agent/build_tool.sh
 
 # Build behind a PyPI mirror.
-bash examples/blackbox_recipes/mini_swe_agent/build_tool.sh \
+bash examples/mini_swe_agent/build_tool.sh \
     --pip-index https://pypi.tuna.tsinghua.edu.cn/simple/
 
 # Build, tag for the remote registry, and push.
-bash examples/blackbox_recipes/mini_swe_agent/build_tool.sh \
+bash examples/mini_swe_agent/build_tool.sh \
     --registry swr.cn-east-3.myhuaweicloud.com/openyuanrong
 ```
 
@@ -109,7 +109,7 @@ OPENYUANRONG_TOKEN="<token>" \
 MODEL_PATH=~/models/Qwen3.5-9B \
 TRAIN_DATA=~/data/uni_agent/swe_rebench_filtered.parquet \
 VAL_DATA=~/data/uni_agent/swe_bench_verified.parquet \
-bash examples/blackbox_recipes/mini_swe_agent/run_train.sh
+bash examples/mini_swe_agent/run_train.sh
 ```
 
 `run_train.sh` starts Ray if needed and submits a Megatron V1 training job in
@@ -181,7 +181,7 @@ rewritten through the reverse tunnel when `proxy_port` is set).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TASK_CONFIG` | `examples/blackbox_recipes/mini_swe_agent/task_config_mini_swe_agent.yaml` | Task-config YAML |
+| `TASK_CONFIG` | `examples/mini_swe_agent/task_config_mini_swe_agent.yaml` | Task-config YAML |
 | `GATEWAY_COUNT` | `8` | Gateway actors fronting the engine |
 | `MAX_CONCURRENT_SESSIONS` | `256` | Max in-flight rollout sessions (runner cap) |
 | `SESSION_TIMEOUT_SECONDS` | `1800` (recipe) / none (framework) | Framework cap per session; guards against runners that hang without raising |
