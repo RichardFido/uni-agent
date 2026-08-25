@@ -1,0 +1,69 @@
+# Task Config for the deepseek_harness blackbox recipe.
+#
+# The sample rows (produced by `uni_agent.tasks.swe_rebench.preprocess` /
+# `uni_agent.tasks.swe_bench.preprocess`) carry only the canonical sandbox image
+# name (`sandbox.image`) plus prompt/metadata; everything below is the per-task
+# default layered on top by `TaskConfigResolver` (file defaults -> sample values
+# -> runtime model binding).
+#
+# This recipe uses the unified runner bridge `uni_agent.framework.task_runner.run_task`
+# (wired in run_train.sh as `agent_runners.task.runner_fqn`), which resolves each
+# sample's task from this file, deep-merges the sample values + the runtime
+# model binding, injects the openyuanrong gateway reverse tunnel (upstream +
+# agent.model.base_url rewrite to http://127.0.0.1:<proxy_port>/v1), and POSTs
+# the reward via report_reward=True. The agent (`uni_agent.agents.deepseek_harness`)
+# only owns the launch: it builds `dsh --profile headless` and execs it in the
+# sandbox.
+#
+# - sandbox.provider=openyuanrong reuses `uni_agent.sandbox.openyuanrong`; the
+#   sandbox mounts the prebuilt dsh tool image (Node CLI + node runtime + the
+#   baked minimal_patch.yml) at /opt/dsh.
+# - sandbox.sandbox_kwargs.proxy_port is the in-sandbox reverse-tunnel port; the
+#   runtime `upstream` (gateway host:port) is injected by run_task, which also
+#   rewrites the agent's model.base_url to http://127.0.0.1:<proxy_port> so DSH
+#   stays tunnel-agnostic.
+# - agent.tool_mode selects the tool surface: 'full' (25-tool Code Mode) or
+#   'minimal' (bash + str_replace_editor via --patch /opt/dsh/minimal_patch.yml).
+#   Overridable per-sample via tools_kwargs.task.agent.tool_mode.
+# - agent.dsh_bin / agent.minimal_patch_path name paths inside the prebuilt tool
+#   image (mounted at /opt/dsh); change them together with the tool image's
+#   Dockerfile layout.
+- name: swe_rebench
+  sandbox:
+    provider: openyuanrong
+    runtime_timeout: 7200
+    image_map:
+      - from: "swebench/**"
+        to: "swr.cn-east-3.myhuaweicloud.com/openyuanrong/swebench/**"
+      - from: "swerebench/**"
+        to: "swr.cn-east-3.myhuaweicloud.com/openyuanrong/swerebench/**"
+    sandbox_kwargs:
+      proxy_port: 38197
+      mounts:
+        - target: /opt/dsh
+          image_url: swr.cn-east-3.myhuaweicloud.com/openyuanrong/dsh-tool:latest
+  agent:
+    name: deepseek_harness
+    run_timeout: 7200
+    conda_env: testbed
+    tool_mode: minimal
+
+- name: swe_bench
+  sandbox:
+    provider: openyuanrong
+    runtime_timeout: 7200
+    image_map:
+      - from: "swebench/**"
+        to: "swr.cn-east-3.myhuaweicloud.com/openyuanrong/swebench/**"
+      - from: "swerebench/**"
+        to: "swr.cn-east-3.myhuaweicloud.com/openyuanrong/swerebench/**"
+    sandbox_kwargs:
+      proxy_port: 38197
+      mounts:
+        - target: /opt/dsh
+          image_url: swr.cn-east-3.myhuaweicloud.com/openyuanrong/dsh-tool:latest
+  agent:
+    name: deepseek_harness
+    run_timeout: 7200
+    conda_env: testbed
+    tool_mode: minimal
