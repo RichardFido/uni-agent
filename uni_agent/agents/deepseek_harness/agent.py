@@ -49,6 +49,10 @@ def build_dsh_command(
     tool_mode: str = "full",
     dsh_bin: str = "/opt/dsh/bin/dsh",
     minimal_patch_path: str = "/opt/dsh/minimal_patch.yml",
+    workdir: str | None = None,
+    model_name: str | None = None,
+    max_model_len: int | None = None,
+    permission_mode: str = "danger-full-access",
 ) -> str:
     """Build the shell command that runs DSH headless against the gateway tunnel.
 
@@ -56,6 +60,14 @@ def build_dsh_command(
     (``http://127.0.0.1:<proxy_port>/v1``) -- ``run_task`` rewrites
     ``agent.model.base_url`` before this agent runs, so the agent is
     tunnel-agnostic.
+
+    ``model_name`` / ``max_model_len`` (optional): when the endpoint is an
+    OpenAI-compatible server that serves ``model_name`` (e.g. vLLM) rather than
+    DeepSeek's official ``deepseek-v4-flash``, DSH defaults to 256k output
+    tokens and its default catalog model, both of which fail (404 unknown model,
+    max_tokens > max_model_len). Supplying these generates a runtime
+    ``llm-deepseek`` patch that points ``agent-default-model`` at ``model_name``
+    and caps ``maxTokens`` below ``max_model_len``.
 
     ``tool_mode``:
       * ``"full"``    -- the default 25-tool Code Mode surface.
@@ -71,6 +83,11 @@ def build_dsh_command(
         "DSH_HOME": DSH_HOME_IN_SANDBOX,
         "IS_SANDBOX": "1",
         "DISABLE_AUTOUPDATER": "1",
+        # Inside the openYuanrong outer sandbox DSH has no inner bash-sandbox
+        # backend (bubblewrap/Landlock/approval channel); default to
+        # danger-full-access so DSH's bash tool runs against the already-isolated
+        # /testbed. Override per deployment via cfg.permission_mode.
+        "DSH_PERMISSION_MODE": permission_mode,
     }
     env_assignments = [f"{key}={shlex.quote(value)}" for key, value in env.items()]
 
@@ -95,10 +112,78 @@ def build_dsh_command(
     elif tool_mode != "full":
         raise ValueError(f"deepseek_harness: unsupported tool_mode={tool_mode!r} (expected 'full' or 'minimal')")
 
+    # Optional overlay that points DSH's llm-deepseek route at the served model
+    # with a maxTokens cap compatible with the endpoint's max_model_len.
+    # Written as a standalone command BEFORE the env-prefixed dsh command:
+    # a heredoc delimiter must end its own line, so it cannot be spliced into
+    # the space-joined env prefix (that would swallow the dsh argv into the
+    # heredoc body and never run dsh). Each building block is its own line in
+    # the produced shell script (no leading ';' on any line).
+    blocks = [f"cd {shlex.quote(workdir or '/testbed')}; mkdir -p {DSH_HOME_IN_SANDBOX}"]
+    if model_name:
+        model_patch_path, model_patch_script = _build_model_overlay_patch(
+            model_name=model_name,
+            max_model_len=max_model_len,
+            path="/tmp/dsh_model_patch.yml",
+        )
+        argv += ["--patch", model_patch_path]
+        blocks.insert(0, model_patch_script)
+
     # The task is the headless positional.
     argv.append(task)
     env_prefix = " ".join(env_assignments)
-    return f"cd /testbed; mkdir -p {DSH_HOME_IN_SANDBOX}; {env_prefix} " + shlex.join(argv)
+    return "\n".join(blocks) + f"\n{env_prefix} " + shlex.join(argv)
+
+
+def _build_model_overlay_patch(
+    *,
+    model_name: str,
+    max_model_len: int | None,
+    path: str,
+) -> tuple[str, str]:
+    """Return ``(patch_path, shell_script)`` writing a DSH llm-deepseek overlay patch.
+
+    DSH's ``llm-deepseek`` defaults to ``maxTokens=256e3`` and a catalog of
+    official DeepSeek models; neither works against a vLLM / OpenAI-compatible
+    endpoint serving ``model_name`` with a smaller context. The patch:
+    - replaces the catalog ``models`` with the served model (``contextWindow``
+      and ``maxTokens`` capped under ``max_model_len`` when known), and
+    - points ``agent-default-model`` at ``model_name``.
+
+    The returned script is appended to the command's env prefix so it runs
+    before dsh boots (it uses ``bash -c`-style redirection, safe to embed).
+    """
+    max_tokens = None
+    if max_model_len is not None and max_model_len > 0:
+        # Leave headroom for the prompt inside the endpoint's total context.
+        max_tokens = int(max_model_len * 0.8)
+    lines = ["- id: llm-deepseek", "  config:"]
+    if max_tokens is not None:
+        lines += [f"    maxTokens: {max_tokens}"]
+    lines += ["    models:"]
+    lines += [
+        f"      - id: {model_name}",
+        f"        name: {model_name}",
+        f"        contextWindow: {max_model_len or 131072}",
+    ]
+    if max_tokens is not None:
+        lines += [f"        maxTokens: {max_tokens}"]
+    lines += [
+        "- id: agent-default-model",
+        "  config:",
+        "    provider: deepseek-official",
+        f"    model: {model_name}",
+        "",
+    ]
+    body = "\n".join(lines)
+    # The heredoc delimiter must terminate on its own line; the trailing
+    # newline lets the caller append "; ..." on the next line.
+    script = (
+        f"cat > {shlex.quote(path)} <<'DSH_MODEL_PATCH_EOF'\n{body}"
+        "DSH_MODEL_PATCH_EOF\n"
+    )
+    logger.info("deepseek_harness: model overlay patch (model_name=%s max_model_len=%s)", model_name, max_model_len)
+    return path, script
 
 
 class DeepSeekHarnessConfig(AgentConfig):
@@ -119,6 +204,21 @@ class DeepSeekHarnessConfig(AgentConfig):
         default="/opt/dsh/minimal_patch.yml",
         description="Patch overlay baked into the tool image; applied when tool_mode=minimal.",
     )
+    permission_mode: str = Field(
+        default="danger-full-access",
+        description="``DSH_PERMISSION_MODE`` for the headless run. Inside an outer isolation "
+        "sandbox (openYuanrong), DSH's own inner bash sandbox has no backend (no bubblewrap/"
+        "Landlock/approval channel), so ``bash`` tool calls fail unless set to "
+        "``danger-full-access`` (letting DSH run unconfined because the outer sandbox already "
+        "isolates it). Set ``workspace-write``/``read-only`` only when DSH runs directly on a host.",
+    )
+    max_model_len: int | None = Field(
+        default=None,
+        description="Endpoint max_model_len (tokens). When set alongside agent.model.model_name, "
+        "dsh's llm-deepseek route is pointed at that served model with maxTokens capped under "
+        "this context (required when the endpoint is vLLM/OpenAI-compatible rather than DeepSeek "
+        "official, whose default catalog model / 256k max_tokens fail).",
+    )
 
 
 @register_agent("deepseek_harness")
@@ -132,6 +232,7 @@ class DeepSeekHarnessAgent(Agent):
         *,
         sandbox: Sandbox,
         messages: list[dict[str, Any]],
+        workdir: str | None = None,
     ) -> AgentResult:
         cfg: DeepSeekHarnessConfig = self.config  # type: ignore[assignment]
         if cfg.model.base_url is None:
@@ -149,6 +250,10 @@ class DeepSeekHarnessAgent(Agent):
             tool_mode=cfg.tool_mode,
             dsh_bin=cfg.dsh_bin,
             minimal_patch_path=cfg.minimal_patch_path,
+            workdir=workdir or "/testbed",
+            model_name=cfg.model.model_name,
+            max_model_len=cfg.max_model_len,
+            permission_mode=cfg.permission_mode,
         )
         # TODO(train): DSH headless has no CLI --max-turns flag (unlike Claude
         # Code's); a per-turn bound needs a DSH config/patch knob. For now the
