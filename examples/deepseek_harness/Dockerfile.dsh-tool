@@ -1,0 +1,39 @@
+# DeepSeek Harness sidecar tool image.
+#
+# Mounted at /opt/dsh inside the SWE-bench sandbox. Ships the
+# @deepseek-ai/dsh Node CLI plus a node runtime under /opt/dsh/bin (the sandbox
+# base image has no node), and the minimal_patch.yml the runner applies for
+# tool_mode=minimal.
+#
+# The runner prepends /opt/dsh/bin to PATH so dsh's `#!/usr/bin/env node`
+# shebang resolves the bundled node binary.
+
+# The base image is overridable via --build-arg BASE_IMAGE=... so CN / air-gapped
+# builds can point at a mirror (e.g. docker.m.daocloud.io/library/node:22-bookworm-slim).
+# node:22 satisfies dsh's transitive deps (commander@15 / pi-ai require node >=22.19).
+ARG BASE_IMAGE=node:22-bookworm-slim
+
+FROM ${BASE_IMAGE} AS builder
+
+ARG DSH_VERSION="latest"
+ARG NPM_REGISTRY=""
+
+ENV DISABLE_AUTOUPDATER=1 \
+    IS_SANDBOX=1 \
+    npm_config_audit=false \
+    npm_config_fund=false \
+    npm_config_update_notifier=false
+
+RUN if [ -n "${NPM_REGISTRY}" ]; then npm config set registry "${NPM_REGISTRY}"; fi \
+    && npm install -g --prefix /opt/dsh "@deepseek-ai/dsh@${DSH_VERSION}" \
+    && cp /usr/local/bin/node /opt/dsh/bin/node \
+    && /opt/dsh/bin/dsh --version
+
+# minimal_patch.yml is applied at runtime via `dsh --profile headless --patch`.
+COPY minimal_patch.yml /opt/dsh/minimal_patch.yml
+
+FROM scratch
+# Copy the /opt/dsh tree to the image ROOT (not /opt/dsh) so the openyuanrong
+# Mount at /opt/dsh exposes bin/dsh, bin/node, lib/..., minimal_patch.yml directly
+# under the mount target. Matches the claude_code tool image convention.
+COPY --from=builder /opt/dsh /

@@ -1,0 +1,69 @@
+# Restrict `dsh --profile headless` to the `minimal` preset's 2-tool native
+# surface: persistent bash + str_replace_editor only. Baked into the tool image
+# at /opt/dsh/minimal_patch.yml and applied at runtime via
+# `dsh --profile headless --patch /opt/dsh/minimal_patch.yml` when
+# tool_mode=minimal.
+#
+# The 25-tool Code Mode surface is mounted by dsh-base as individual `tool-*`
+# rows (see `dsh --profile headless --dump-config`). This patch disables every
+# tool-bearing row except `tool-bash` and `tool-str-replace-editor`, leaving
+# `code-runtime` + `agent-loop` intact (disabling code-runtime removes the
+# agent-loop factory and breaks boot).
+#
+# Measured effect (dsh 0.1.0-rc.8): tools 25 -> 2, system message 4122 -> 257
+# chars, request body 33411 -> 6774 bytes.
+- id: tool-pwsh
+  disabled: true
+- id: tool-jobs
+  disabled: true
+- id: tool-fs
+  disabled: true
+- id: tool-fs-search
+  disabled: true
+- id: tool-skill
+  disabled: true
+- id: tool-subagent-control
+  disabled: true
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: tool-subagent-report
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: tool-todo
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: tool-ralph
+  disabled: true
+- id: tool-web
+  disabled: true
+# plan-mode registers the `exit_plan_mode` tool; disable it to reach the 2-tool
+# (bash + str_replace_editor) surface.
+- id: plan-mode
+  disabled: true
+
+# ===== Training-data hygiene switches =====
+# 1) Disable session-title generation. Both session-title (local fallback) and
+#    session-title-llm (a ~64-token LLM title call on the first prompt) are
+#    loaded by dsh-base; `disabled: true` makes the cordis loader skip their
+#    initialization, so no title request is issued and no standalone short-title
+#    trajectory is mixed into the training data.
+- id: session-title
+  disabled: true
+- id: session-title-llm
+  disabled: true
+
+# 2) Disable automatic context compaction (compaction-basic.auto: false).
+#    With it off, both the agent/pre-step pressure compaction and the
+#    agent/request-error context-overflow recovery are disabled: a task that
+#    exceeds contextWindow (default 131072) fails with a context-overflow error
+#    instead, and the episode is dropped by mask_unfinished_episode rather than
+#    polluting the loss.
+- id: compaction-basic
+  config:
+    auto: false
