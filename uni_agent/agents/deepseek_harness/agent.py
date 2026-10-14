@@ -20,7 +20,6 @@ uses the gateway's OpenAI adapter directly.
 
 from __future__ import annotations
 
-import json
 import logging
 import shlex
 from typing import TYPE_CHECKING, Any
@@ -134,18 +133,20 @@ def build_dsh_command(
 
     # Optional step watchdog: cap agent steps by counting DSH's plaintext session
     # log. DSH has no native step flag, so we (1) force the session-persistence
-    # plugin to write uncompressed JSONL via a patch, then (2) run dsh in the
-    # background under a watchdog that kills it once `step/start` events reach
-    # `step_limit`. A killed dsh exits non-zero -> finished=False -> masked from
+    # plugin to write uncompressed JSONL via a patch, then (2) launch dsh in the
+    # background and run a watchdog beside it that kills that exact PID once
+    # `step/start` events reach `step_limit` (see the launch tail below, which owns
+    # the ordering). A killed dsh exits non-zero -> finished=False -> masked from
     # the loss (same semantics as mini_swe_agent.step_limit).
-    use_watchdog = step_limit is not None and step_limit > 0
-    if use_watchdog:
+    # Normalized once so the launch tail and the watchdog helper agree; `None`
+    # disables the watchdog, and the narrowed `int` is what the helper takes.
+    step_cap = int(step_limit) if step_limit is not None and step_limit > 0 else None
+    if step_cap is not None:
         session_patch_path, session_patch_script = _build_session_log_patch(
             path="/tmp/dsh_session_patch.yml",
         )
         argv += ["--patch", session_patch_path]
         blocks.append(session_patch_script)
-        blocks.append(_build_step_watchdog(step_limit=step_limit, session_dir=DSH_HOME_IN_SANDBOX))
 
     # Optional data-hygiene patch: disable DSH's auto session-title and auto
     # context-compaction so each rollout yields a single clean task trajectory
@@ -164,8 +165,17 @@ def build_dsh_command(
     argv.append(task)
     env_prefix = " ".join(env_assignments)
     dsh_run = f"{env_prefix} " + shlex.join(argv)
-    if use_watchdog:
-        dsh_run = f"{dsh_run} &\nDSPID=$!\n" + _watchdog_wait_block()
+    if step_cap is not None:
+        # dsh goes first so the watchdog can be handed its exact PID: $! is only
+        # meaningful immediately after the background launch, and the subshell
+        # forked below inherits $DSPID.
+        dsh_run = (
+            f"{dsh_run} &\n"
+            "DSPID=$!\n"
+            + _build_step_watchdog(step_limit=step_cap, session_dir=DSH_HOME_IN_SANDBOX)
+            + "WPID=$!\n"
+            + _watchdog_wait_block()
+        )
     return "\n".join(blocks) + f"\n{dsh_run}"
 
 
@@ -212,10 +222,7 @@ def _build_model_overlay_patch(
     body = "\n".join(lines)
     # The heredoc delimiter must terminate on its own line; the trailing
     # newline lets the caller append "; ..." on the next line.
-    script = (
-        f"cat > {shlex.quote(path)} <<'DSH_MODEL_PATCH_EOF'\n{body}"
-        "DSH_MODEL_PATCH_EOF\n"
-    )
+    script = f"cat > {shlex.quote(path)} <<'DSH_MODEL_PATCH_EOF'\n{body}DSH_MODEL_PATCH_EOF\n"
     logger.info("deepseek_harness: model overlay patch (model_name=%s max_model_len=%s)", model_name, max_model_len)
     return path, script
 
@@ -260,11 +267,12 @@ def _build_data_hygiene_patch(*, path: str, disable_title: bool, disable_auto_co
     if not body:
         return "", ""
     body.append("")
-    script = (
-        f"cat > {shlex.quote(path)} <<'DSH_HYGIENE_PATCH_EOF'\n{chr(10).join(body)}"
-        "DSH_HYGIENE_PATCH_EOF\n"
+    script = f"cat > {shlex.quote(path)} <<'DSH_HYGIENE_PATCH_EOF'\n{chr(10).join(body)}DSH_HYGIENE_PATCH_EOF\n"
+    logger.info(
+        "deepseek_harness: data-hygiene patch (disable_title=%s disable_auto_compaction=%s)",
+        disable_title,
+        disable_auto_compaction,
     )
-    logger.info("deepseek_harness: data-hygiene patch (disable_title=%s disable_auto_compaction=%s)", disable_title, disable_auto_compaction)
     return path, script
 
 
@@ -285,29 +293,33 @@ def _build_session_log_patch(*, path: str) -> tuple[str, str]:
             "",
         ]
     )
-    script = (
-        f"cat > {shlex.quote(path)} <<'DSH_SESSION_PATCH_EOF'\n{body}"
-        "DSH_SESSION_PATCH_EOF\n"
-    )
+    script = f"cat > {shlex.quote(path)} <<'DSH_SESSION_PATCH_EOF'\n{body}DSH_SESSION_PATCH_EOF\n"
     logger.info("deepseek_harness: session-persistence patched to plaintext JSONL (for step watchdog)")
     return path, script
 
 
 def _build_step_watchdog(*, step_limit: int, session_dir: str) -> str:
-    """Return a shell snippet that kills a background dsh after ``step_limit`` steps.
+    """Return a backgrounded snippet that kills this episode's dsh at ``step_limit``.
 
     Counts ``"type":"step/start"`` lines across every plaintext session log under
-    ``session_dir`` (``$DSH_HOME/sessions``), every 0.5s, and once the count
-    reaches ``step_limit`` kills the dsh binary process (scoped via its absolute
-    path so unrelated processes are untouched).
+    ``session_dir`` (``$DSH_HOME/sessions``) every 0.5s and, once the count reaches
+    ``step_limit``, kills the dsh process by the PID the caller captured in
+    ``$DSPID`` (``$!`` immediately after the background launch; the watchdog
+    subshell inherits it because it is forked afterwards).
+
+    Targeting that exact PID is deliberate: :meth:`Sandbox.exec_shell` runs the
+    generated script as ``bash -c <script>``, so the whole script text is part of
+    this shell's own command line. A ``pkill -f`` on the dsh binary path would
+    therefore also match -- and SIGKILL -- the shell running the episode, which
+    would skip the ``wait``/``exit`` that reports dsh's real status.
     """
     sessions_glob = f"{shlex.quote(session_dir)}/sessions/*/*/session.jsonl"
     return (
         "(\n"
         "  while :; do\n"
-        f"    N=$(grep -ah '\"type\":\"step/start\"' {sessions_glob} 2>/dev/null | wc -l)\n"
-        f"    if [ \"${{N:-0}}\" -ge {int(step_limit)} ]; then\n"
-        f"      pkill -9 -f {shlex.quote('/opt/dsh/bin/dsh')} 2>/dev/null\n"
+        f'    N=$(grep -ah \'"type":"step/start"\' {sessions_glob} 2>/dev/null | wc -l)\n'
+        f'    if [ "${{N:-0}}" -ge {int(step_limit)} ]; then\n'
+        '      kill -9 "$DSPID" 2>/dev/null\n'
         "      break\n"
         "    fi\n"
         "    sleep 0.5\n"
@@ -319,15 +331,13 @@ def _build_step_watchdog(*, step_limit: int, session_dir: str) -> str:
 def _watchdog_wait_block() -> str:
     """Return the shell closing snippet that waits on the backgrounded dsh.
 
-    ``build_dsh_command`` backgrounds dsh as ``$DSPID`` and runs the watchdog in
-    a subshell; this block waits for ``$DSPID`` to finish (either normally or by
-    the watchdog's kill) and lets the outer script exit with dsh's real status.
+    ``build_dsh_command`` backgrounds dsh as ``$DSPID`` and the watchdog as
+    ``$WPID``; this block waits for ``$DSPID`` to finish (either normally or by the
+    watchdog's kill), stops the watchdog so it cannot outlive the episode, and lets
+    the outer script exit with dsh's real status -- non-zero when the step cap
+    fired, so the episode is reported unfinished.
     """
-    return (
-        "wait $DSPID\n"
-        "RC=$?\n"
-        "exit $RC\n"
-    )
+    return 'wait $DSPID\nRC=$?\nkill "$WPID" 2>/dev/null\nexit $RC\n'
 
 
 class DeepSeekHarnessConfig(AgentConfig):

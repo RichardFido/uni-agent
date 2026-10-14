@@ -41,11 +41,11 @@
         to: "swr.cn-east-3.myhuaweicloud.com/openyuanrong/swebench/**"
       - from: "swerebench/**"
         to: "swr.cn-east-3.myhuaweicloud.com/openyuanrong/swerebench/**"
+    image_mounts:
+      - image: swr.cn-east-3.myhuaweicloud.com/openyuanrong/dsh-tool:latest
+        mount_path: /opt/dsh
     sandbox_kwargs:
       proxy_port: 38197
-      mounts:
-        - target: /opt/dsh
-          image_url: swr.cn-east-3.myhuaweicloud.com/openyuanrong/dsh-tool:latest
   agent:
     name: deepseek_harness
     run_timeout: 7200
@@ -62,11 +62,11 @@
         to: "swr.cn-east-3.myhuaweicloud.com/openyuanrong/swebench/**"
       - from: "swerebench/**"
         to: "swr.cn-east-3.myhuaweicloud.com/openyuanrong/swerebench/**"
+    image_mounts:
+      - image: swr.cn-east-3.myhuaweicloud.com/openyuanrong/dsh-tool:latest
+        mount_path: /opt/dsh
     sandbox_kwargs:
       proxy_port: 38197
-      mounts:
-        - target: /opt/dsh
-          image_url: swr.cn-east-3.myhuaweicloud.com/openyuanrong/dsh-tool:latest
   agent:
     name: deepseek_harness
     run_timeout: 7200

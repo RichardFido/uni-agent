@@ -111,8 +111,9 @@ MAX_CONCURRENT_SESSIONS="${MAX_CONCURRENT_SESSIONS:-320}"
 # concurrency slot forever and stalls the whole training batch.
 SESSION_TIMEOUT_SECONDS="${SESSION_TIMEOUT_SECONDS:-2400}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-$(basename "${MODEL_PATH}")}"
-# The agent reports finished explicitly (exit_status == "Submitted"); set True to
-# exclude unfinished episodes from the loss (paired with the finished field in agent.py).
+# The agent reports finished explicitly (dsh exit code == 0; a crash, the
+# run_timeout cap, or a step_limit kill exit non-zero). Set True to exclude
+# unfinished episodes from the loss (paired with the finished field in agent.py).
 MASK_UNFINISHED_EPISODE="${MASK_UNFINISHED_EPISODE:-True}"
 AGENT_LOG_DIR="${AGENT_LOG_DIR:-/home/${USER}/uni_agent_logs}"
 NUM_AGENT_WORKERS="${NUM_AGENT_WORKERS:-8}"
