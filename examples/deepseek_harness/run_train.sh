@@ -100,8 +100,8 @@ PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-16}"
 PPO_MICRO_BATCH_SIZE_PER_GPU="${PPO_MICRO_BATCH_SIZE_PER_GPU:-1}"
 
 # ── Agent-framework rollout (unified run_task bridge) ────────────────────
-# deepseek_harness knobs (run_timeout/conda_env/tool_mode) and the tool-image
-# mount are configured in TASK_CONFIG (task_config_deepseek_harness.yaml).
+# deepseek_harness knobs (run_timeout/conda_env_path/tool_mode) and the tool-image
+# mount + executable_paths are configured in TASK_CONFIG (task_config_deepseek_harness.yaml).
 TASK_CONFIG="${TASK_CONFIG:-examples/deepseek_harness/task_config_deepseek_harness.yaml}"
 TOOL_PARSER="${TOOL_PARSER:-qwen3_coder}"   # gateway tool-call parser; must match the model chat template
 GATEWAY_COUNT="${GATEWAY_COUNT:-8}"

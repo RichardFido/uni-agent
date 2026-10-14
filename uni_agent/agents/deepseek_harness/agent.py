@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import shlex
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from pydantic import Field
@@ -44,9 +45,9 @@ def build_dsh_command(
     *,
     task: str,
     base_url: str,
-    conda_env: str = "testbed",
+    conda_env_path: str | None = None,
     tool_mode: str = "full",
-    dsh_bin: str = "/opt/dsh/bin/dsh",
+    dsh_bin: str = "dsh",
     minimal_patch_path: str = "/opt/dsh/minimal_patch.yml",
     workdir: str | None = None,
     model_name: str | None = None,
@@ -63,13 +64,24 @@ def build_dsh_command(
     ``agent.model.base_url`` before this agent runs, so the agent is
     tunnel-agnostic.
 
-    ``model_name`` / ``max_model_len`` (optional): when the endpoint is an
-    OpenAI-compatible server that serves ``model_name`` (e.g. vLLM) rather than
-    DeepSeek's official ``deepseek-v4-flash``, DSH defaults to 256k output
-    tokens and its default catalog model, both of which fail (404 unknown model,
-    max_tokens > max_model_len). Supplying these generates a runtime
-    ``llm-deepseek`` patch that points ``agent-default-model`` at ``model_name``
-    and caps ``maxTokens`` below ``max_model_len``.
+    ``model_name`` / ``max_model_len``: against a vLLM / OpenAI-compatible endpoint
+    that serves the policy rather than DeepSeek's official ``deepseek-v4-flash``,
+    DSH's default catalog model 404s, so ``model_name`` (a runtime binding) drives a
+    generated ``llm-deepseek`` overlay that points ``agent-default-model`` and the
+    catalog at the served model. The optional ``max_model_len`` additionally
+    advertises that endpoint context (DSH otherwise falls back to 131072) and caps
+    the overlay's per-request ``maxTokens`` at 80% of it. Both are harness-side: the
+    Gateway clamps every request's ``max_tokens`` to the remaining trajectory
+    capacity (``rollout.prompt_length + rollout.response_length``) before it reaches
+    the engine, so the cap aligns DSH's own accounting rather than guarding the
+    backend.
+
+    ``dsh_bin`` / ``conda_env_path``: the tool image is mounted at ``/opt/dsh`` and
+    the task config exposes its ``dsh`` CLI and bundled ``node`` runtime through
+    ``sandbox.executable_paths`` (linked into ``/usr/bin``), so the
+    ``#!/usr/bin/env node`` shebang resolves without any PATH surgery here.
+    ``conda_env_path`` (optional, absolute) activates the task image's conda env
+    for the shell commands DSH runs.
 
     ``tool_mode``:
       * ``"full"``    -- the default 25-tool Code Mode surface.
@@ -93,19 +105,20 @@ def build_dsh_command(
     }
     env_assignments = [f"{key}={shlex.quote(value)}" for key, value in env.items()]
 
-    if conda_env:
-        conda_prefix = f"/opt/miniconda3/envs/{conda_env}"
+    if conda_env_path:
+        # The task image keeps the repo's interpreter and deps in a conda env, and
+        # DSH's bash tool inherits this process env, so activate it here. The conda
+        # root is derived from the env path rather than hardcoding /opt/miniconda3.
+        # `dsh` and `node` come from sandbox.executable_paths (/usr/bin), so nothing
+        # else needs to be added to PATH.
+        env_dir = PurePosixPath(conda_env_path)
         env_assignments.extend(
             [
-                f"CONDA_DEFAULT_ENV={shlex.quote(conda_env)}",
-                f"CONDA_PREFIX={shlex.quote(conda_prefix)}",
-                # /opt/dsh/bin must be on PATH so dsh's `#!/usr/bin/env node`
-                # shebang resolves the node binary shipped in the tool image.
-                f"PATH={shlex.quote(conda_prefix + '/bin')}:/opt/dsh/bin:/opt/miniconda3/bin:$PATH",
+                f"CONDA_DEFAULT_ENV={shlex.quote(env_dir.name)}",
+                f"CONDA_PREFIX={shlex.quote(str(env_dir))}",
+                f"PATH={shlex.quote(str(env_dir / 'bin'))}:{shlex.quote(str(env_dir.parent.parent / 'bin'))}:$PATH",
             ]
         )
-    else:
-        env_assignments.append("PATH=/opt/dsh/bin:$PATH")
 
     argv = [dsh_bin, "--profile", "headless"]
     if tool_mode == "minimal":
@@ -187,15 +200,15 @@ def _build_model_overlay_patch(
 ) -> tuple[str, str]:
     """Return ``(patch_path, shell_script)`` writing a DSH llm-deepseek overlay patch.
 
-    DSH's ``llm-deepseek`` defaults to ``maxTokens=256e3`` and a catalog of
-    official DeepSeek models; neither works against a vLLM / OpenAI-compatible
-    endpoint serving ``model_name`` with a smaller context. The patch:
+    DSH's ``llm-deepseek`` defaults to a catalog of official DeepSeek models
+    (``deepseek-v4-flash``), which 404s against a vLLM / OpenAI-compatible
+    endpoint serving ``model_name``. The patch:
     - replaces the catalog ``models`` with the served model (``contextWindow``
       and ``maxTokens`` capped under ``max_model_len`` when known), and
     - points ``agent-default-model`` at ``model_name``.
 
-    The returned script is appended to the command's env prefix so it runs
-    before dsh boots (it uses ``bash -c`-style redirection, safe to embed).
+    The returned script is emitted as its own command block ahead of the
+    env-prefixed dsh command (it uses ``cat``-style redirection, safe to embed).
     """
     max_tokens = None
     if max_model_len is not None and max_model_len > 0:
@@ -345,15 +358,24 @@ class DeepSeekHarnessConfig(AgentConfig):
 
     name: str = "deepseek_harness"
     run_timeout: float = Field(default=7200.0, description="Wallclock cap (s) on the dsh process.")
-    conda_env: str = Field(default="testbed", description="Task repo conda env, activated around the launch.")
+    conda_env_path: str | None = Field(
+        default=None,
+        description="Task-image path of the conda env used by the shell commands DSH runs "
+        "(e.g. /opt/miniconda3/envs/testbed); leave unset for images without conda.",
+    )
     tool_mode: str = Field(
         default="minimal",
         description="'minimal' (bash + str_replace_editor via --patch, the default) or 'full' (25-tool Code Mode).",
     )
     # Tool-image paths are bound to the prebuilt tool image's Dockerfile layout
-    # (mounted at /opt/dsh), declared here so the task config can override if
-    # that layout changes.
-    dsh_bin: str = Field(default="/opt/dsh/bin/dsh", description="dsh CLI inside the mounted tool image.")
+    # (mounted at /opt/dsh). `dsh` and its bundled `node` are exposed at /usr/bin by
+    # sandbox.executable_paths, so the CLI is invoked by name; the task config can
+    # override either path if that layout changes.
+    dsh_bin: str = Field(
+        default="dsh",
+        description="dsh CLI command, exposed at /usr/bin via sandbox.executable_paths "
+        "(the tool image ships it at /opt/dsh/bin/dsh).",
+    )
     minimal_patch_path: str = Field(
         default="/opt/dsh/minimal_patch.yml",
         description="Patch overlay baked into the tool image; applied when tool_mode=minimal.",
@@ -368,10 +390,11 @@ class DeepSeekHarnessConfig(AgentConfig):
     )
     max_model_len: int | None = Field(
         default=None,
-        description="Endpoint max_model_len (tokens). When set alongside agent.model.model_name, "
-        "dsh's llm-deepseek route is pointed at that served model with maxTokens capped under "
-        "this context (required when the endpoint is vLLM/OpenAI-compatible rather than DeepSeek "
-        "official, whose default catalog model / 256k max_tokens fail).",
+        description="Endpoint context (tokens) advertised to DSH: sets the model overlay's "
+        "contextWindow and caps its per-request maxTokens at 80% of this value. Harness-side "
+        "only -- the Gateway already clamps every request's max_tokens to the remaining "
+        "trajectory capacity (rollout.prompt_length + rollout.response_length); set this to "
+        "that same sum so DSH's own context accounting matches the served endpoint.",
     )
     step_limit: int | None = Field(
         default=None,
@@ -424,7 +447,7 @@ class DeepSeekHarnessAgent(Agent):
         agent_cmd = build_dsh_command(
             task=task,
             base_url=cfg.model.base_url,
-            conda_env=cfg.conda_env,
+            conda_env_path=cfg.conda_env_path,
             tool_mode=cfg.tool_mode,
             dsh_bin=cfg.dsh_bin,
             minimal_patch_path=cfg.minimal_patch_path,

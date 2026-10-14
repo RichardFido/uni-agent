@@ -177,11 +177,12 @@ touching the training script. It carries an entry per task name (`swe_rebench`,
 | `sandbox.image_map` | `swebench/**`, `swerebench/**` -> `swr.cn-east-3.myhuaweicloud.com/openyuanrong/**` | Prefixes canonical SWE image refs with the sandbox registry |
 | `sandbox.sandbox_kwargs.proxy_port` | `38197` | Sandbox-internal reverse-tunnel port -- **single source of truth** |
 | `sandbox.image_mounts[]` | `image: .../dsh-tool:latest`, `mount_path: /opt/dsh` | Provider-independent sidecar tool-image mount (see #235); the provider turns it into the same `sdk.Mount(target, image_url)` |
+| `sandbox.executable_paths` | `dsh: /opt/dsh/bin/dsh`, `node: /opt/dsh/bin/node` | Links the mounted tool image's CLI and its bundled `node` runtime into `/usr/bin`, so dsh's `#!/usr/bin/env node` shebang resolves (same idiom as the `claude_code`/`openclaw` recipes) |
 | `agent.run_timeout` | `7200` | Wall-clock cap (s) on the in-sandbox `dsh` process |
-| `agent.conda_env` | `testbed` | Task-image conda env activated around the launch (`/opt/miniconda3/envs/<name>`) |
+| `agent.conda_env_path` | `/opt/miniconda3/envs/testbed` | Task-image conda env activated for the shell commands DSH runs; leave unset for images without conda |
 | `agent.tool_mode` | `minimal` | `minimal` (bash + str_replace_editor via `--patch`) or `full` (25-tool Code Mode) |
 | `agent.step_limit` | `100` | Max DSH steps; enforced by the watchdog (see [Step limit](#step-limit)). `null` disables the cap |
-| `agent.dsh_bin` | `/opt/dsh/bin/dsh` | `dsh` CLI inside the mounted tool image |
+| `agent.dsh_bin` | `dsh` | `dsh` CLI command, exposed at `/usr/bin` by `sandbox.executable_paths` |
 | `agent.minimal_patch_path` | `/opt/dsh/minimal_patch.yml` | Patch overlay baked into the tool image |
 | `agent.permission_mode` | `danger-full-access` | `DSH_PERMISSION_MODE`. Inside the outer sandbox DSH has no inner bash-sandbox backend, so `bash` tool calls need `danger-full-access`; use `workspace-write`/`read-only` only when DSH runs directly on a host |
 | `agent.max_model_len` | unset | Endpoint `max_model_len`; set together with `agent.model.model_name` to emit the model overlay patch. Required for vLLM/OpenAI-compatible endpoints |
