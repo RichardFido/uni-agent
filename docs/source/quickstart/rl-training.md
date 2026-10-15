@@ -436,14 +436,49 @@ Beyond the shared [Prepare the Data](#prepare-the-data) step, this recipe needs:
 
 ### Launch Training
 
+The deployment below runs on an 8-node Ascend NPU 910B cluster (8 cards per node):
+
 ```bash
 OPENYUANRONG_SERVER_ADDRESS="<server-address>" \
 OPENYUANRONG_TOKEN="<token>" \
 MODEL_PATH=~/models/Qwen3.5-9B \
 TRAIN_DATA=~/data/uni_agent/swe_rebench_filtered_1150.parquet \
 VAL_DATA=~/data/uni_agent/swe_bench_verified.parquet \
+NNODES=8 \
+N_GPUS_PER_NODE=8 \
+ROLLOUT_NNODES=4 \
+ROLLOUT_NGPUS_PER_NODE=8 \
+TRAIN_TP=4 \
+TRAIN_PP=2 \
+TRAIN_CP=4 \
+GEN_TP=2 \
+GATEWAY_COUNT=32 \
+MAX_CONCURRENT_SESSIONS=320 \
+TRAIN_BATCH_SIZE=64 \
+PPO_MINI_BATCH_SIZE=16 \
+N=8 \
+PROMPT_LENGTH=8192 \
+RESPONSE_LENGTH=131072 \
 bash examples/deepseek_harness/run_train.sh
 ```
+
+Parallelism and batch layout:
+
+- **Trainer pool** — `NNODES x N_GPUS_PER_NODE` Megatron workers with
+  `TRAIN_TP=4 / TRAIN_PP=2 / TRAIN_CP=4`.
+- **Rollout pool** — `ROLLOUT_NNODES x ROLLOUT_NGPUS_PER_NODE` vLLM workers
+  (`ENGINE=vllm`) with `GEN_TP=2`, sampling `N=8` responses per prompt, with at most
+  `MAX_CONCURRENT_SESSIONS=320` sessions in flight.
+- **Batch layout** — `TRAIN_BATCH_SIZE=64` prompts per step, `PPO_MINI_BATCH_SIZE=16`,
+  and a sequence budget of `PROMPT_LENGTH=8192` + `RESPONSE_LENGTH=131072`
+  (`PROMPT_LENGTH + RESPONSE_LENGTH` is also the Gateway trajectory capacity).
+- **Gateway pool** — `GATEWAY_COUNT` Gateway actors front the engine; the reverse
+  tunnel routes each in-sandbox `dsh` to one of them.
+
+This launcher starts Ray with NPU resources by default
+(`ray start --resources='{"NPU": <total>}'`, where the total is the trainer plus the
+rollout pool) and exports `NCCL_P2P_DISABLE=1` / `NCCL_SHM_DISABLE=1` for multi-node
+NPU communication. On a GPU cluster, start Ray with `--num-gpus=<total>` instead.
 
 `run_train.sh` submits a Megatron V1 job in `separate_async` mode (separate train
 and rollout pools) with a pool of `GATEWAY_COUNT` Gateway actors fronting the
@@ -486,4 +521,4 @@ The complete knob reference lives in `examples/deepseek_harness/README.md`.
 
 The following dashboard summarizes reward, SWE-Bench Verified performance, rollout behavior, throughput, timing, and policy-drift metrics for this run:
 
-![DeepSeek Harness Qwen3.5-9B training metrics](../assets/results_deepseek_harness.svg){ width="1200" }
+![DeepSeek Harness Qwen3.5-9B training metrics](../assets/results_deepseek_harness.svg)
