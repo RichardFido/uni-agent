@@ -407,12 +407,11 @@ Over the first 50 training steps, the SWE-Bench Verified resolved rate increases
 
 ## Case 4: DeepSeek Harness RL
 
-This recipe trains `Qwen3.5-9B` with the black-box `DeepSeek Harness` Agent. Unlike
-the two cases above, the real `dsh --profile headless` CLI runs **inside** the task
-sandbox from a sidecar tool image, calls the policy through the session-scoped
-Gateway over a reverse tunnel, and the reward is evaluated in the same sandbox. The
-Task Config is the single per-task source of truth; the training script only wires
-the framework.
+This recipe trains `Qwen3.5-9B` with the black-box `DeepSeek Harness` Agent: the
+real `dsh --profile headless` CLI runs inside the task sandbox from a sidecar tool
+image, calls the policy through the session-scoped Gateway over a reverse tunnel,
+and the reward is evaluated in the same sandbox. The Task Config is the single
+per-task source of truth; the training script only wires the framework.
 
 ### Prerequisites
 
@@ -446,13 +445,12 @@ VAL_DATA=~/data/uni_agent/swe_bench_verified.parquet \
 bash examples/deepseek_harness/run_train.sh
 ```
 
-How this case differs from Cases 1-3:
+`run_train.sh` submits a Megatron V1 job in `separate_async` mode (separate train
+and rollout pools) with a pool of `GATEWAY_COUNT` Gateway actors fronting the
+engine.
 
-- **Its own launcher.** `run_train.sh` submits a Megatron V1 job in
-  `separate_async` mode (separate train and rollout pools) with a pool of
-  `GATEWAY_COUNT` Gateway actors fronting the engine.
-- **Reverse tunnel instead of a direct route.** The sandbox never needs a route to
-  the GPU cluster: `run_task` rewrites `agent.model.base_url` to
+- **Reverse tunnel.** The sandbox reaches the policy without a route to the GPU
+  cluster: `run_task` rewrites `agent.model.base_url` to
   `http://127.0.0.1:<proxy_port>/v1`, where `proxy_port` is
   `sandbox.sandbox_kwargs.proxy_port` — the single source of truth.
 - **Runtime data hygiene.** The agent emits a DSH patch that disables auto
