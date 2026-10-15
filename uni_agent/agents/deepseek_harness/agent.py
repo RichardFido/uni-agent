@@ -495,6 +495,11 @@ class DeepSeekHarnessAgent(Agent):
         if len(messages) > 2:
             raise ValueError(f"deepseek_harness accepts at most 2 messages (system?, user), got {len(messages)}")
         problem = next((m["content"] for m in messages if m.get("role") == "user"), None)
-        if not problem:
-            raise ValueError("deepseek_harness requires a 'user' message (the problem statement)")
+        # Must be plain text: an OpenAI content-parts list would reach shlex.join()
+        # as a list element and fail there with an opaque TypeError.
+        if not isinstance(problem, str) or not problem.strip():
+            raise ValueError(
+                "deepseek_harness requires a 'user' message with non-empty text content "
+                "(content-parts lists are not supported)"
+            )
         return problem

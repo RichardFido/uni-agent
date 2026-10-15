@@ -43,7 +43,7 @@ Per sample, `uni_agent.framework.task_runner.run_task`:
 
 | Step | Purpose |
 |---|---|
-| `cat > /tmp/dsh_model_patch.yml` | Points DSH's `llm-deepseek` route at the served model and caps `maxTokens` below the endpoint's `max_model_len` (DSH otherwise defaults to its own catalog model and a 256k output cap, which fail against vLLM). Only written when `agent.max_model_len` is set. |
+| `cat > /tmp/dsh_model_patch.yml` | Points DSH's `llm-deepseek` route at the served model (DSH otherwise requests its own catalog model, which a vLLM / OpenAI-compatible server 404s). Written whenever `agent.model.model_name` is set, which `run_train.sh` always does via `SERVED_MODEL_NAME`; setting `agent.max_model_len` additionally advertises that context and caps the per-request `maxTokens` below it. |
 | `cat > /tmp/dsh_session_patch.yml` | Forces `session-persistence-jsonl` to `compression: none` so the step watchdog can read a plaintext `session.jsonl`. Only written when `agent.step_limit` is set. |
 | `cat > /tmp/dsh_data_hygiene.yml` | Disables DSH's auto session-title generation and auto context compaction (see `agent.disable_title_generation` / `agent.disable_auto_compaction`). |
 | `cd <workdir>; mkdir -p /tmp/dsh-home` | Working directory and DSH home. |
@@ -185,7 +185,7 @@ touching the training script. It carries an entry per task name (`swe_rebench`,
 | `agent.dsh_bin` | `dsh` | `dsh` CLI command, exposed at `/usr/bin` by `sandbox.executable_paths` |
 | `agent.minimal_patch_path` | `/opt/dsh/minimal_patch.yml` | Patch overlay baked into the tool image |
 | `agent.permission_mode` | `danger-full-access` | `DSH_PERMISSION_MODE`. Inside the outer sandbox DSH has no inner bash-sandbox backend, so `bash` tool calls need `danger-full-access`; use `workspace-write`/`read-only` only when DSH runs directly on a host |
-| `agent.max_model_len` | unset | Endpoint `max_model_len`; set together with `agent.model.model_name` to emit the model overlay patch. Required for vLLM/OpenAI-compatible endpoints |
+| `agent.max_model_len` | unset | Optional endpoint context advertised to DSH: adds the overlay's `contextWindow` (without it DSH falls back to 131072) and caps its per-request `maxTokens` at 80% of this value. Harness-side only -- the Gateway clamps every request's `max_tokens` to the remaining trajectory capacity, so it is not what protects the backend |
 | `agent.disable_title_generation` | `true` | Disable DSH's auto session-title call (a ~64-token LLM request that materializes as an extra 1-turn trajectory) |
 | `agent.disable_auto_compaction` | `true` | Set `compaction-basic.auto=false`, so a rollout never splits at a compaction boundary; over-length tasks fail and get masked instead |
 
