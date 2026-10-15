@@ -59,35 +59,24 @@ def build_dsh_command(
 ) -> str:
     """Build the shell command that runs DSH headless against the gateway tunnel.
 
-    ``base_url`` is already the sandbox-internal tunnel address
-    (``http://127.0.0.1:<proxy_port>/v1``) -- ``run_task`` rewrites
-    ``agent.model.base_url`` before this agent runs, so the agent is
-    tunnel-agnostic.
+    ``base_url`` is already the sandbox-internal tunnel address; ``run_task``
+    rewrites ``agent.model.base_url`` before this agent runs.
 
-    ``model_name`` / ``max_model_len``: against a vLLM / OpenAI-compatible endpoint
-    that serves the policy rather than DeepSeek's official ``deepseek-v4-flash``,
-    DSH's default catalog model 404s, so ``model_name`` (a runtime binding) drives a
-    generated ``llm-deepseek`` overlay that points ``agent-default-model`` and the
-    catalog at the served model. The optional ``max_model_len`` additionally
-    advertises that endpoint context (DSH otherwise falls back to 131072) and caps
-    the overlay's per-request ``maxTokens`` at 80% of it. Both are harness-side: the
-    Gateway clamps every request's ``max_tokens`` to the remaining trajectory
-    capacity (``rollout.prompt_length + rollout.response_length``) before it reaches
-    the engine, so the cap aligns DSH's own accounting rather than guarding the
-    backend.
+    ``model_name`` (a runtime binding) drives an ``llm-deepseek`` overlay pointing
+    DSH at the served model -- its own catalog model would 404 against a vLLM /
+    OpenAI-compatible endpoint. The optional ``max_model_len`` advertises that
+    context (DSH otherwise falls back to 131072) and caps the per-request
+    ``maxTokens`` at 80% of it; harness-side only, since the Gateway clamps each
+    request's ``max_tokens`` to the remaining trajectory capacity.
 
-    ``dsh_bin`` / ``conda_env_path``: the tool image is mounted at ``/opt/dsh`` and
-    the task config exposes its ``dsh`` CLI and bundled ``node`` runtime through
-    ``sandbox.executable_paths`` (linked into ``/usr/bin``), so the
-    ``#!/usr/bin/env node`` shebang resolves without any PATH surgery here.
+    ``dsh`` and its bundled ``node`` are exposed at ``/usr/bin`` via
+    ``sandbox.executable_paths``, so nothing is added to PATH here.
     ``conda_env_path`` (optional, absolute) activates the task image's conda env
     for the shell commands DSH runs.
 
-    ``tool_mode``:
-      * ``"full"``    -- the default 25-tool Code Mode surface.
-      * ``"minimal"`` -- apply the baked ``minimal_patch.yml`` to restrict the
-        request to ``bash`` + ``str_replace_editor`` (measured: 25 -> 2 tools,
-        4122 -> 257 sys_chars).
+    ``tool_mode``: ``"minimal"`` restricts the surface to bash +
+    str_replace_editor via the baked ``minimal_patch.yml``; ``"full"`` keeps the
+    default 25-tool Code Mode surface.
     """
     # DSH's llm-deepseek route honors DEEPSEEK_BASE_URL / DEEPSEEK_API_KEY. The
     # gateway has no auth path, so a dummy key is fine.
@@ -198,17 +187,13 @@ def _build_model_overlay_patch(
     max_model_len: int | None,
     path: str,
 ) -> tuple[str, str]:
-    """Return ``(patch_path, shell_script)`` writing a DSH llm-deepseek overlay patch.
+    """Return ``(patch_path, shell_script)`` writing a DSH ``llm-deepseek`` overlay.
 
-    DSH's ``llm-deepseek`` defaults to a catalog of official DeepSeek models
-    (``deepseek-v4-flash``), which 404s against a vLLM / OpenAI-compatible
-    endpoint serving ``model_name``. The patch:
-    - replaces the catalog ``models`` with the served model (``contextWindow``
-      and ``maxTokens`` capped under ``max_model_len`` when known), and
-    - points ``agent-default-model`` at ``model_name``.
-
-    The returned script is emitted as its own command block ahead of the
-    env-prefixed dsh command (it uses ``cat``-style redirection, safe to embed).
+    DSH's default catalog model 404s against a vLLM / OpenAI-compatible endpoint,
+    so the patch replaces the catalog with ``model_name`` (``contextWindow`` and
+    ``maxTokens`` capped under ``max_model_len`` when known) and points
+    ``agent-default-model`` at it. Emitted as its own command block ahead of the
+    env-prefixed dsh command; a heredoc delimiter must end its own line.
     """
     max_tokens = None
     if max_model_len is not None and max_model_len > 0:
@@ -241,27 +226,14 @@ def _build_model_overlay_patch(
 
 
 def _build_data_hygiene_patch(*, path: str, disable_title: bool, disable_auto_compaction: bool) -> tuple[str, str]:
-    """Return ``(patch_path, shell_script)`` writing a DSH patch quality switch.
+    """Return ``(patch_path, shell_script)`` for the runtime data-hygiene patch.
 
-    Two optional switches kept out of ``minimal_patch.yml`` so they can be
-    toggled per-deployment without rebuilding/overriding the mounted tool image:
-
-    * ``disable_title`` -- disables ``session-title`` and ``session-title-llm``.
-      DSH auto-invokes a lightweight session-title generation on the first
-      prompt (a ~64-token LLM call). Inside the training gateway that call is
-      materialized as an extra 1-turn trajectory that carries the *task's*
-      reward but no task signal, polluting the batch (~45% of trajectory
-      objects in a step are title rows). Disabling it removes those rows.
-    * ``disable_auto_compaction`` -- sets ``compaction-basic.auto=false``,
-      turning off both the step-pressure compaction (contextWindow *
-      thresholdRatio trigger) and the context-overflow auto-recovery. Effect:
-      no compact-split trajectory segments in training data; cost: tasks that
-      exceed ``contextWindow`` fail with a context-window-exceeded error and
-      are masked from the loss via ``mask_unfinished_episode=True``.
-
-    The generated file is written under the sandbox ``/tmp`` (writable) and
-    appended to the ``dsh --patch`` chain, so it does not depend on the mounted
-    tool image being writable.
+    ``disable_title`` disables DSH's auto session-title generation, which would
+    otherwise surface as an extra 1-turn trajectory with no task signal;
+    ``disable_auto_compaction`` sets ``compaction-basic.auto=false`` so a rollout
+    never splits at a compaction boundary (over-length tasks fail and are masked
+    instead). Written under the sandbox ``/tmp`` so it works even when the mounted
+    tool image is read-only.
     """
     body = []
     if disable_title:
@@ -314,17 +286,10 @@ def _build_session_log_patch(*, path: str) -> tuple[str, str]:
 def _build_step_watchdog(*, step_limit: int, session_dir: str) -> str:
     """Return a backgrounded snippet that kills this episode's dsh at ``step_limit``.
 
-    Counts ``"type":"step/start"`` lines across every plaintext session log under
-    ``session_dir`` (``$DSH_HOME/sessions``) every 0.5s and, once the count reaches
-    ``step_limit``, kills the dsh process by the PID the caller captured in
-    ``$DSPID`` (``$!`` immediately after the background launch; the watchdog
-    subshell inherits it because it is forked afterwards).
-
-    Targeting that exact PID is deliberate: :meth:`Sandbox.exec_shell` runs the
-    generated script as ``bash -c <script>``, so the whole script text is part of
-    this shell's own command line. A ``pkill -f`` on the dsh binary path would
-    therefore also match -- and SIGKILL -- the shell running the episode, which
-    would skip the ``wait``/``exit`` that reports dsh's real status.
+    Counts ``"type":"step/start"`` lines under ``session_dir`` every 0.5s and kills
+    the PID captured in ``$DSPID`` once the count reaches the limit. The exact PID
+    matters: the script runs as ``bash -c <script>``, so a ``pkill -f`` on the dsh
+    path would also SIGKILL the shell running the episode and lose its exit status.
     """
     sessions_glob = f"{shlex.quote(session_dir)}/sessions/*/*/session.jsonl"
     return (
@@ -342,13 +307,9 @@ def _build_step_watchdog(*, step_limit: int, session_dir: str) -> str:
 
 
 def _watchdog_wait_block() -> str:
-    """Return the shell closing snippet that waits on the backgrounded dsh.
-
-    ``build_dsh_command`` backgrounds dsh as ``$DSPID`` and the watchdog as
-    ``$WPID``; this block waits for ``$DSPID`` to finish (either normally or by the
-    watchdog's kill), stops the watchdog so it cannot outlive the episode, and lets
-    the outer script exit with dsh's real status -- non-zero when the step cap
-    fired, so the episode is reported unfinished.
+    """Return the shell tail that waits on dsh, stops the watchdog, and exits with
+    dsh's real status (non-zero when the step cap fired, so the episode is
+    reported unfinished).
     """
     return 'wait $DSPID\nRC=$?\nkill "$WPID" 2>/dev/null\nexit $RC\n'
 
