@@ -12,6 +12,13 @@
 #
 # Measured effect (dsh 0.1.0-rc.8): tools 25 -> 2, system message 4122 -> 257
 # chars, request body 33411 -> 6774 bytes.
+#
+# Training-data hygiene (session-title / auto-compaction) deliberately does NOT
+# live here: the agent emits it at runtime from `agent.disable_title_generation`
+# / `agent.disable_auto_compaction`. Because a baked `disabled: true` is applied
+# whenever tool_mode=minimal and the runtime patch can only add rows (it never
+# writes `disabled: false`), baking these rows would make both switches one-way:
+# setting them to false would silently leave the features disabled.
 - id: tool-pwsh
   disabled: true
 - id: tool-jobs
@@ -46,24 +53,3 @@
 # (bash + str_replace_editor) surface.
 - id: plan-mode
   disabled: true
-
-# ===== Training-data hygiene switches =====
-# 1) Disable session-title generation. Both session-title (local fallback) and
-#    session-title-llm (a ~64-token LLM title call on the first prompt) are
-#    loaded by dsh-base; `disabled: true` makes the cordis loader skip their
-#    initialization, so no title request is issued and no standalone short-title
-#    trajectory is mixed into the training data.
-- id: session-title
-  disabled: true
-- id: session-title-llm
-  disabled: true
-
-# 2) Disable automatic context compaction (compaction-basic.auto: false).
-#    With it off, both the agent/pre-step pressure compaction and the
-#    agent/request-error context-overflow recovery are disabled: a task that
-#    exceeds contextWindow (default 131072) fails with a context-overflow error
-#    instead, and the episode is dropped by mask_unfinished_episode rather than
-#    polluting the loss.
-- id: compaction-basic
-  config:
-    auto: false
