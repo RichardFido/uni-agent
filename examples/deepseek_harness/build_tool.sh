@@ -17,7 +17,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="${TOOL_IMAGE:-dsh-tool}"
 IMAGE_TAG="${TOOL_TAG:-latest}"
-DSH_VERSION="${DSH_VERSION:-latest}"
+# Pinned to the version minimal_patch.yml was measured against (its row IDs are
+# dsh internals); override with --dsh-version to build against another release.
+DSH_VERSION="${DSH_VERSION:-0.1.0-rc.8}"
 BASE_IMAGE="${BASE_IMAGE:-}"
 
 # Parse args

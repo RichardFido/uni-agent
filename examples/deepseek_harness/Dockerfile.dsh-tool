@@ -15,7 +15,11 @@ ARG BASE_IMAGE=node:22-bookworm-slim
 
 FROM ${BASE_IMAGE} AS builder
 
-ARG DSH_VERSION="latest"
+# Pinned on purpose: minimal_patch.yml disables rows by their dsh-internal IDs,
+# and that set was measured against this version. A newer dsh that renames or
+# drops a row would make the restriction silently stop applying (no error), so
+# bump this deliberately and re-measure the tool surface (see build_tool.sh).
+ARG DSH_VERSION="0.1.0-rc.8"
 ARG NPM_REGISTRY=""
 
 ENV DISABLE_AUTOUPDATER=1 \
